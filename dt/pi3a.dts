@@ -1,0 +1,17 @@
+/dts-v1/;
+/plugin/;
+/ {
+	/* Raspberry Pi 3 */
+	compatible = "brcm,bcm2837";
+	fragment@0 {
+		target = <&uart1>;
+		status = "okay";
+
+		__overlay__ {
+			espnetcard {
+				compatible = "mr,espnetcard";
+				status = "okay";
+			};
+		};
+	};
+};
