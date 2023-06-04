@@ -13,6 +13,10 @@ static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *
 static void espchip_data_received(struct device_data *dev_data);
 static void rx_timeout_callback(struct timer_list *tlist);
 
+/* helper function that checks if sequence is present in received data,
+ * user is responsible for locking mutex, return start index of sequence or -EINVAL */
+static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size);
+
 static const struct serdev_device_ops espchip_serial_ops = {
     .receive_buf = espchip_serial_rx,
 };
@@ -103,6 +107,11 @@ static void espchip_data_received(struct device_data *dev_data)
         printk(KERN_CONT "%02X ", (uint32_t)chip->rx_buff[i]);
     }
     printk(KERN_CONT "\n");
+
+    u8 seq[] = {"OK\r\n"};
+    int idx = rx_buffer_has_sequence(chip, seq, sizeof(seq) - 1);
+    if (idx >= 0)
+        dev_info(&dev_data->serdev->dev, "found OKCRLF at index: %d\n", idx);
 }
 
 static void rx_timeout_callback(struct timer_list *tlist)
@@ -112,13 +121,33 @@ static void rx_timeout_callback(struct timer_list *tlist)
     chip = from_timer(chip, tlist, rx_timeout_timer);
     dev_data = serdev_device_get_drvdata(chip->serdev);
 
-    /*
-     * if mutex is locked it means that rx callback is active
-     * (timeout happened just when new data came), the rx callback will reschedule this timer
-     */
-    if (mutex_trylock(&chip->rx_buff_mutex))
-    {
+    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
+        return;
+    if (chip->rx_buff_curr_pos)
         espchip_data_received(dev_data);
-        mutex_unlock(&chip->rx_buff_mutex);
+    mutex_unlock(&chip->rx_buff_mutex);
+}
+
+static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size)
+{
+    int count;
+    int seq_index;
+
+    if (chip->rx_buff_curr_pos < seq_size)
+        return -EINVAL;
+
+    for (int i = 0; i <= (chip->rx_buff_curr_pos - seq_size); i++)
+    {
+        count = 0;
+        seq_index = 0;
+        for (int j = i; j < (i + seq_size); j++)
+        {
+            if (chip->rx_buff[j] == seq[seq_index])
+                count++;
+            seq_index++;
+        }
+        if (count == seq_size)
+            return i;
     }
+    return -EINVAL;
 }
