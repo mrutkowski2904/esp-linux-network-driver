@@ -1,6 +1,5 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <net/cfg80211.h>
 #include <linux/skbuff.h>
 #include <linux/inet.h>
 #include <linux/ip.h>
@@ -12,7 +11,9 @@
 #include <linux/of.h>
 #include <linux/delay.h>
 
+#include "common.h"
 #include "core.h"
+#include "chip.h"
 
 /* DUMMY UDP RX PACKET DATA */
 #define DIP "193.168.1.6"
@@ -499,6 +500,12 @@ static int espndev_probe(struct serdev_device *serdev)
 
     serdev_device_set_drvdata(serdev, dev_data);
     dev_data->serdev = serdev;
+    status = espchip_init(dev_data);
+    if(status)
+    {
+        dev_err(&serdev->dev, "error while initializing the ESP32 module\n");
+        return status;
+    }
     sema_init(&dev_data->wiphy_sem, 1);
 
     dev_data->scan_workqueue = create_singlethread_workqueue("esp_scan_wq");
@@ -547,13 +554,17 @@ static void espndev_remove(struct serdev_device *serdev)
     dev_data = serdev_device_get_drvdata(serdev);
 
     cancel_work_sync(&dev_data->scan_work);
+    destroy_workqueue(dev_data->scan_workqueue);
+
     cancel_work_sync(&dev_data->connect_work);
+    destroy_workqueue(dev_data->connect_workqueue);
+
     cancel_work_sync(&dev_data->disconnect_work);
+    destroy_workqueue(dev_data->disconnect_workqueue);
+
     espndev_netdev_deinit(dev_data);
     espndev_wiphy_deinit(dev_data);
-    destroy_workqueue(dev_data->scan_workqueue);
-    destroy_workqueue(dev_data->connect_workqueue);
-    destroy_workqueue(dev_data->disconnect_workqueue);
+    espchip_deinit(dev_data);
 
     /* TODO: REMOVE */
     destroy_workqueue(dev_data->debug_workqueue);
