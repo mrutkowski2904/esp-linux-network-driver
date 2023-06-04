@@ -1,11 +1,17 @@
 #include <linux/serdev.h>
 #include <linux/wait.h>
 #include <linux/mutex.h>
+#include <linux/timer.h>
+#include <linux/jiffies.h>
 
 #include "common.h"
 #include "chip.h"
 
+/* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
+
+static void espchip_data_received(struct device_data *dev_data);
+static void rx_timeout_callback(struct timer_list *tlist);
 
 static const struct serdev_device_ops espchip_serial_ops = {
     .receive_buf = espchip_serial_rx,
@@ -19,8 +25,17 @@ int espchip_init(struct device_data *dev_data)
     if (dev_data->chip == NULL)
         return -ENOMEM;
 
+    dev_data->chip->rx_buff = devm_kzalloc(&dev_data->serdev->dev, ESPCHIP_RX_BUFF_SIZE, GFP_KERNEL);
+    if (dev_data->chip->rx_buff == NULL)
+        return -ENOMEM;
+
+    dev_data->chip->rx_buff_curr_pos = 0;
+    dev_data->chip->serdev = dev_data->serdev;
+
     mutex_init(&dev_data->chip->io_mutex);
+    mutex_init(&dev_data->chip->rx_buff_mutex);
     init_waitqueue_head(&dev_data->chip->rx_ready_wq);
+    timer_setup(&dev_data->chip->rx_timeout_timer, rx_timeout_callback, 0);
 
     serdev_device_set_client_ops(dev_data->serdev, &espchip_serial_ops);
     status = serdev_device_open(dev_data->serdev);
@@ -34,6 +49,7 @@ int espchip_init(struct device_data *dev_data)
     serdev_device_set_flow_control(dev_data->serdev, false);
     serdev_device_set_parity(dev_data->serdev, SERDEV_PARITY_NONE);
 
+    /* TODO: REMOVE DUMMY WRITE */
     char *buff = "ATE0\r\n";
     dev_info(&dev_data->serdev->dev, "Wrote data to device\n");
     status = serdev_device_write_buf(dev_data->serdev, buff, sizeof(buff));
@@ -44,23 +60,65 @@ int espchip_init(struct device_data *dev_data)
 void espchip_deinit(struct device_data *dev_data)
 {
     serdev_device_close(dev_data->serdev);
+    del_timer_sync(&dev_data->chip->rx_timeout_timer);
 }
 
 /* can sleep */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size)
 {
     struct device_data *dev_data;
+    struct espchip_data *chip;
     dev_data = serdev_device_get_drvdata(serdev);
-    dev_info(&serdev->dev, "rx data, size = %ld\n", size);
+    chip = dev_data->chip;
 
-    for (int i = 0; i < size; i++)
+    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
+        return 0;
+
+    /* more data that the driver can handle */
+    if ((size + chip->rx_buff_curr_pos) >= ESPCHIP_RX_BUFF_SIZE)
     {
-        printk(KERN_CONT "%02X ", (uint32_t)buffer[i]);
-        // printk("%c", (char)buffer[i]);
+        /* stop the timeout timer */
+        del_timer_sync(&chip->rx_timeout_timer);
+        chip->rx_buff_curr_pos = 0;
+        mutex_unlock(&chip->rx_buff_mutex);
+        return size;
+    }
+
+    memcpy(chip->rx_buff + chip->rx_buff_curr_pos, buffer, size);
+    chip->rx_buff_curr_pos += size;
+    /* update the timeout timer */
+    mod_timer(&chip->rx_timeout_timer, jiffies + msecs_to_jiffies(ESPCHIP_SERIAL_RX_TIMEOUT_MS));
+    mutex_unlock(&chip->rx_buff_mutex);
+    return size;
+}
+
+static void espchip_data_received(struct device_data *dev_data)
+{
+    struct espchip_data *chip;
+    chip = dev_data->chip;
+
+    dev_info(&dev_data->serdev->dev, "in data received callback\n");
+    for (int i = 0; i <= chip->rx_buff_curr_pos; i++)
+    {
+        printk(KERN_CONT "%02X ", (uint32_t)chip->rx_buff[i]);
     }
     printk(KERN_CONT "\n");
-    // printk("\n");
+}
 
-    /* TODO: wake anyone waiting on rx waitqueue */
-    return size;
+static void rx_timeout_callback(struct timer_list *tlist)
+{
+    struct device_data *dev_data;
+    struct espchip_data *chip;
+    chip = from_timer(chip, tlist, rx_timeout_timer);
+    dev_data = serdev_device_get_drvdata(chip->serdev);
+
+    /*
+     * if mutex is locked it means that rx callback is active
+     * (timeout happened just when new data came), the rx callback will reschedule this timer
+     */
+    if (mutex_trylock(&chip->rx_buff_mutex))
+    {
+        espchip_data_received(dev_data);
+        mutex_unlock(&chip->rx_buff_mutex);
+    }
 }
