@@ -19,8 +19,20 @@
 #define DUMMY_SSID "dummy_network"
 #define DUMMY_SSID_SIZE (sizeof(DUMMY_SSID) - 1)
 
+/* DUMMY UDP RX PACKET DATA */
+#define DIP "193.168.1.6"
+#define DPORT 55555
+
+#define SRC_MAC                            \
+    {                                      \
+        0xF0, 0xDE, 0xF1, 0x48, 0xAA, 0xC1 \
+    }
+
 struct device_data
 {
+    struct serdev_device *serdev;
+    u8 esp_mac[ETH_ALEN];
+
     struct wiphy *wiphy;
     struct net_device *ndev;
     struct semaphore wiphy_sem;
@@ -67,6 +79,8 @@ static void esp_wiphy_disconnect_work_cb(struct work_struct *work);
 /* netdev operations */
 static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *dev);
 
+/* helper functions */
+static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *data, u16 data_size);
 static int espndev_wiphy_init(struct device_data *dev_data);
 static void espndev_wiphy_deinit(struct device_data *dev_data);
 static int espndev_netdev_init(struct device_data *dev_data);
@@ -143,149 +157,56 @@ static struct ieee80211_supported_band espndev_band_2ghz = {
 
 /* DEBUG WORK REMOVE */
 
+/* pkt_hex_dump function from:
+ * https://olegkutkov.me/2019/10/17/printing-sk_buff-data/ */
 void pkt_hex_dump(struct sk_buff *skb)
 {
     size_t len;
     int rowsize = 16;
     int i, l, linelen, remaining;
     int li = 0;
-    uint8_t *data, ch; 
+    uint8_t *data, ch;
 
     printk("Packet hex dump:\n");
-    data = (uint8_t *) skb_mac_header(skb);
+    data = (uint8_t *)skb_mac_header(skb);
 
-    if (skb_is_nonlinear(skb)) {
+    if (skb_is_nonlinear(skb))
+    {
         len = skb->data_len;
-    } else {
+    }
+    else
+    {
         len = skb->len;
     }
 
     remaining = len;
-    for (i = 0; i < len; i += rowsize) {
+    for (i = 0; i < len; i += rowsize)
+    {
         printk("%06d\t", li);
 
         linelen = min(remaining, rowsize);
         remaining -= rowsize;
 
-        for (l = 0; l < linelen; l++) {
+        for (l = 0; l < linelen; l++)
+        {
             ch = data[l];
-            printk(KERN_CONT "%02X ", (uint32_t) ch);
+            printk(KERN_CONT "%02X ", (uint32_t)ch);
         }
 
         data += linelen;
-        li += 10; 
+        li += 10;
 
         printk(KERN_CONT "\n");
     }
 }
-
-/* set ip addr to DIP */
-#define DIP "193.168.1.6"
-#define SIP "193.168.1.5"
-#define SPORT 55555
-#define DPORT 55555
-
-#define SRC_MAC                            \
-    {                                      \
-        0xF0, 0xDE, 0xF1, 0x48, 0xAA, 0xC1 \
-    }
-#define DST_MAC                            \
-    {                                      \
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00 \
-    }
 
 static void esp_wiphy_debug_work_cb(struct work_struct *work)
 {
     struct device_data *dev_data;
 
     dev_data = container_of(work, struct device_data, debug_work);
-
-    /* simulate response (UDP) */
-    pr_info("in debug work\n");
-
-    struct sk_buff *skb = NULL;
-    struct ethhdr *eth_header = NULL;
-    struct iphdr *ip_header = NULL;
-    struct udphdr *udp_header = NULL;
-    __be32 dip = in_aton(DIP);
-    __be32 sip = in_aton(SIP);
-    u8 buf[] = {"hello from kernel"};
-    u16 data_len = sizeof(buf);
-
-    u8 *pdata = NULL;
-    u32 skb_len;
-    u8 dst_mac[ETH_ALEN] = DST_MAC;
-    u8 src_mac[ETH_ALEN] = SRC_MAC;
-
-    skb_len = data_len + sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct ethhdr);
-    skb = dev_alloc_skb(skb_len);
-    if (!skb)
-    {
-        pr_info("skb alloc failed\n");
-        return;
-    }
-    skb_reserve(skb, sizeof(struct ethhdr));
-    skb->dev = dev_data->ndev;
-    skb->pkt_type = PACKET_HOST;
-    // skb->protocol = htons(ETH_P_IP);
-    // skb->ip_summed = CHECKSUM_NONE;
-    skb->priority = 0;
-
-    skb_set_network_header(skb, 0);
-    skb_put(skb, sizeof(struct iphdr));
-    skb_set_transport_header(skb, sizeof(struct iphdr));
-    skb_put(skb, sizeof(struct udphdr));
-
-    /* construct udp header in skb */
-    udp_header = udp_hdr(skb);
-    udp_header->source = htons(SPORT);
-    udp_header->dest = htons(DPORT);
-    udp_header->len = htons(8);
-    udp_header->check = 0;
-
-    /* construct ip header in skb */
-    ip_header = ip_hdr(skb);
-    ip_header->version = 4;
-    ip_header->ihl = sizeof(struct iphdr) >> 2;
-    ip_header->frag_off = 0;
-    ip_header->protocol = IPPROTO_UDP;
-    ip_header->tos = 0;
-    ip_header->daddr = dip;
-    ip_header->saddr = sip;
-    ip_header->ttl = 0x40;
-    ip_header->tot_len = htons(skb->len);
-    ip_header->check = 0;
-
-    /* caculate checksum */
-    skb->csum = skb_checksum(skb, ip_header->ihl * 4, skb->len - ip_header->ihl * 4, 0);
-    ip_header->check = ip_fast_csum(ip_header, ip_header->ihl);
-    udp_header->check = csum_tcpudp_magic(sip, dip, skb->len - ip_header->ihl * 4, IPPROTO_UDP, skb->csum);
-
-    /* insert data in skb */
-    pdata = skb_put(skb, data_len);
-    if (pdata)
-    {
-        memcpy(pdata, buf, data_len);
-    }
-    // printk("payload:%20s\n", pdata);
-
-    /* construct ethernet header in skb */
-    eth_header = skb_push(skb, ETH_HLEN);
-    memcpy(eth_header->h_dest, dst_mac, ETH_ALEN);
-    memcpy(eth_header->h_source, src_mac, ETH_ALEN);
-    eth_header->h_proto = htons(ETH_P_IP);
-
-    msleep(100);
-    skb->ip_summed = CHECKSUM_UNNECESSARY;
-    skb->protocol = eth_type_trans(skb, dev_data->ndev);
-    pr_info("--------------\nrx cb\n");
-    pkt_hex_dump(skb);
-    if (netif_rx(skb) == NET_RX_DROP)
-    {
-        pr_info("rx packet dropped\n");
-        return;
-    }
-    pr_info("rx packet accepted (initially)\n");
+    u8 my_msg[] = {"my message from kernel :)"};
+    esp_rx_udp(dev_data, ntohl(in_aton("193.168.1.2")), 55555, my_msg, sizeof(my_msg));
 }
 
 static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *scan_req)
@@ -401,7 +322,7 @@ static void esp_wiphy_connect_work_cb(struct work_struct *work)
     struct device_data *dev_data;
 
     dev_data = container_of(work, struct device_data, connect_work);
-
+    /* DUMMY SLEEP REMOVE IN THE FUTURE */
     msleep(300);
     if (down_interruptible(&dev_data->wiphy_sem))
         return;
@@ -479,6 +400,74 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
     return NETDEV_TX_OK;
 }
 
+static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *data, u16 data_size)
+{
+    struct sk_buff *skb = NULL;
+    struct ethhdr *eth_header = NULL;
+    struct iphdr *ip_header = NULL;
+    struct udphdr *udp_header = NULL;
+
+    __be32 dip = in_aton(DIP);
+    __be32 sip = htonl(ip);
+
+    u8 *pdata = NULL;
+    u32 skb_len;
+    u8 src_mac[ETH_ALEN] = SRC_MAC;
+
+    skb_len = data_size + sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct ethhdr);
+    skb = dev_alloc_skb(skb_len);
+    if (!skb)
+    {
+        dev_err_ratelimited(&dev_data->serdev->dev, "could not allocate skb!\n");
+        return;
+    }
+    skb_reserve(skb, sizeof(struct ethhdr));
+    skb->dev = dev_data->ndev;
+    skb->pkt_type = PACKET_HOST;
+    skb->priority = 0;
+
+    skb_set_network_header(skb, 0);
+    skb_put(skb, sizeof(struct iphdr));
+    skb_set_transport_header(skb, sizeof(struct iphdr));
+    skb_put(skb, sizeof(struct udphdr));
+
+    udp_header = udp_hdr(skb);
+    udp_header->source = htons(port);
+    udp_header->dest = htons(DPORT);
+    udp_header->len = htons(sizeof(struct udphdr) + data_size);
+    udp_header->check = 0;
+
+    ip_header = ip_hdr(skb);
+    ip_header->version = 4;
+    ip_header->ihl = sizeof(struct iphdr) >> 2;
+    ip_header->frag_off = 0;
+    ip_header->protocol = IPPROTO_UDP;
+    ip_header->tos = 0;
+    ip_header->daddr = dip;
+    ip_header->saddr = sip;
+    ip_header->ttl = 0x40;
+    ip_header->tot_len = htons(sizeof(struct udphdr) + sizeof(struct iphdr) + data_size);
+    ip_header->check = 0;
+
+    skb->csum = skb_checksum(skb, ip_header->ihl * 4, skb->len - ip_header->ihl * 4, 0);
+    ip_header->check = ip_fast_csum(ip_header, ip_header->ihl);
+    udp_header->check = csum_tcpudp_magic(sip, dip, skb->len - ip_header->ihl * 4, IPPROTO_UDP, skb->csum);
+
+    pdata = skb_put(skb, data_size);
+    if (pdata)
+        memcpy(pdata, data, data_size);
+
+    eth_header = skb_push(skb, ETH_HLEN);
+    memcpy(eth_header->h_dest, dev_data->esp_mac, ETH_ALEN);
+    memcpy(eth_header->h_source, src_mac, ETH_ALEN);
+    eth_header->h_proto = htons(ETH_P_IP);
+    skb->ip_summed = CHECKSUM_UNNECESSARY;
+    skb->protocol = eth_type_trans(skb, dev_data->ndev);
+    pkt_hex_dump(skb);
+    if (netif_rx(skb) == NET_RX_DROP)
+        dev_err_ratelimited(&dev_data->serdev->dev, "rx skb dropped!\n");
+}
+
 static int espndev_wiphy_init(struct device_data *dev_data)
 {
     int status;
@@ -524,10 +513,7 @@ static int espndev_netdev_init(struct device_data *dev_data)
     dev_data->ndev->ieee80211_ptr = &ndev_data->wireless_device;
     dev_data->ndev->netdev_ops = &esp_ndev_ops;
     dev_data->ndev->flags |= IFF_NOARP;
-    dev_data->ndev->features |= NETIF_F_HW_CSUM | NETIF_F_RXCSUM | NETIF_F_SCTP_CRC | NETIF_F_NETNS_LOCAL;
-    // dev_data->ndev->hard_header_len = ETH_HLEN;
-    // dev_data->ndev->min_header_len = ETH_HLEN;
-    // dev_data->ndev->addr_len = ETH_HLEN;
+    dev_data->ndev->features |= (NETIF_F_HW_CSUM | NETIF_F_RXCSUM | NETIF_F_SCTP_CRC | NETIF_F_NETNS_LOCAL);
 
     status = register_netdev(dev_data->ndev);
     if (status)
@@ -555,6 +541,7 @@ static int espndev_probe(struct serdev_device *serdev)
         return -ENOMEM;
 
     serdev_device_set_drvdata(serdev, dev_data);
+    dev_data->serdev = serdev;
     sema_init(&dev_data->wiphy_sem, 1);
 
     dev_data->scan_workqueue = create_singlethread_workqueue("esp_scan_wq");
@@ -621,7 +608,7 @@ static __init int espndrv_init(void)
     status = serdev_device_driver_register(&espndev_platform_driver);
     if (status)
     {
-        pr_info("error while registering espnetcard driver\n");
+        pr_err("error while registering espnetcard driver\n");
         return status;
     }
     pr_info("espnetcard driver inserted\n");
