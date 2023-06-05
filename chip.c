@@ -11,8 +11,11 @@
 
 #define ESPCHIP_AT_RESET "AT+RST\r\n"
 #define ESPCHIP_AT_NOECHO "ATE0\r\n"
+#define ESPCHIP_AT_STA_MODE "AT+CWMODE=1\r\n"
+#define ESPCHIP_AT_LIST_AP "AT+CWLAP\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
+#define ESPCHIP_SCAN_TIME_MS 5000
 
 /* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
@@ -22,6 +25,8 @@ static void rx_timeout_callback(struct timer_list *tlist);
 
 static int espchip_reset(struct device_data *dev_data);
 static int espchip_disable_at_echo(struct device_data *dev_data);
+static int espchip_enable_sta_mode(struct device_data *dev_data);
+static int espchip_enable_scan_ap(struct device_data *dev_data);
 
 /* helper functions to remove redundant code */
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size);
@@ -31,6 +36,8 @@ static int espchip_at_execute_command_wait_okcrlf(struct espchip_data *chip, voi
 /* helper function that checks if sequence is present in received data,
  * user is responsible for locking mutex, return start index of sequence or -EINVAL */
 static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size);
+static int rx_buffer_has_sequence_starting_from(struct espchip_data *chip, u16 start, u8 *seq, u16 seq_size);
+
 static int rx_buffer_has_okcrlf(struct espchip_data *chip);
 static void rx_buffer_clear(struct espchip_data *chip);
 
@@ -73,20 +80,22 @@ int espchip_init(struct device_data *dev_data)
 
     status = espchip_reset(dev_data);
     if (status)
-    {
-        espchip_deinit(dev_data);
-        dev_err(&dev_data->serdev->dev, "error while resetting ESP32\n");
-        return status;
-    }
+        goto chip_err;
 
     status = espchip_disable_at_echo(dev_data);
     if (status)
-    {
-        espchip_deinit(dev_data);
-        return status;
-    }
+        goto chip_err;
+
+    status = espchip_enable_sta_mode(dev_data);
+    if (status)
+        goto chip_err;
+
+    espchip_enable_scan_ap(dev_data);
 
     return 0;
+chip_err:
+    espchip_deinit(dev_data);
+    return status;
 }
 
 void espchip_deinit(struct device_data *dev_data)
@@ -191,6 +200,57 @@ static int espchip_disable_at_echo(struct device_data *dev_data)
     return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_NOECHO, sizeof(ESPCHIP_AT_NOECHO));
 }
 
+static int espchip_enable_sta_mode(struct device_data *dev_data)
+{
+    return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_STA_MODE, sizeof(ESPCHIP_AT_STA_MODE));
+}
+
+static int espchip_enable_scan_ap(struct device_data *dev_data)
+{
+    int status, ap_index, ssid_start, ssid_end;
+    u8 ap_sequence[] = {"+CWLAP:("};
+    u16 ssid_len;
+    const u16 ap_sequence_size = sizeof(ap_sequence) - 1;
+    const u16 ecn_offset = 8; /* offset from ap_index to the encrption method */
+    const u16 ssid_offset = 11; /* offset from ap_index to the first char of SSID */
+    char ssid_tmp_str[ESPCHIP_SSID_BUFFER_SIZE + 1];
+    char ecn_method;
+    struct espchip_data *chip = dev_data->chip;
+
+    dev_info(&dev_data->serdev->dev, "scanning APs\n");
+    status = espchip_at_start_command(dev_data->chip, ESPCHIP_AT_LIST_AP, sizeof(ESPCHIP_AT_LIST_AP));
+    if (status)
+        return status;
+
+    mutex_unlock(&chip->rx_buff_mutex);
+    msleep(ESPCHIP_SCAN_TIME_MS);
+
+    /* manually relock the mutex after sleep */
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    ap_index = rx_buffer_has_sequence_starting_from(chip, 0, ap_sequence, ap_sequence_size);
+    while (ap_index >= 0)
+    {
+        memset(ssid_tmp_str, '\0', ESPCHIP_SSID_BUFFER_SIZE + 1);
+        ssid_start = ap_index + ssid_offset;
+        ssid_end = rx_buffer_has_sequence_starting_from(chip, ssid_start, "\",", 2);
+        ssid_len = ssid_end - ssid_start;
+        memcpy(ssid_tmp_str, chip->rx_buff + ssid_start, ssid_len);
+        ecn_method = *(chip->rx_buff + ap_index + ecn_offset);
+
+        pr_info("found AP: %s, SSID len: %d, ecn: %c\n", ssid_tmp_str, ssid_len, ecn_method);
+        ap_index = rx_buffer_has_sequence_starting_from(chip, ap_index + ap_sequence_size, ap_sequence, ap_sequence_size);
+    }
+
+    espchip_at_end_command(dev_data->chip);
+    return 0;
+}
+
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size)
 {
     int status;
@@ -246,13 +306,18 @@ static int espchip_at_execute_command_wait_okcrlf(struct espchip_data *chip, voi
 
 static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size)
 {
+    return rx_buffer_has_sequence_starting_from(chip, 0, seq, seq_size);
+}
+
+static int rx_buffer_has_sequence_starting_from(struct espchip_data *chip, u16 start, u8 *seq, u16 seq_size)
+{
     int count;
     int seq_index;
 
-    if (chip->rx_buff_curr_pos < seq_size)
+    if (chip->rx_buff_curr_pos < (seq_size + start))
         return -EINVAL;
 
-    for (int i = 0; i <= (chip->rx_buff_curr_pos - seq_size); i++)
+    for (int i = start; i <= (chip->rx_buff_curr_pos - seq_size); i++)
     {
         count = 0;
         seq_index = 0;
