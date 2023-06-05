@@ -2,10 +2,17 @@
 #include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/timer.h>
+#include <linux/completion.h>
 #include <linux/jiffies.h>
+#include <linux/delay.h>
 
 #include "common.h"
 #include "chip.h"
+
+#define ESPCHIP_AT_RESET "AT+RST\r\n"
+#define ESPCHIP_AT_NOECHO "ATE0\r\n"
+
+#define ESPCHIP_RESET_TIME_MS 750
 
 /* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
@@ -13,9 +20,19 @@ static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *
 static void espchip_data_received(struct device_data *dev_data);
 static void rx_timeout_callback(struct timer_list *tlist);
 
+static int espchip_reset(struct device_data *dev_data);
+static int espchip_disable_at_echo(struct device_data *dev_data);
+
+/* helper functions to remove redundant code */
+static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size);
+static void espchip_at_end_command(struct espchip_data *chip);
+static int espchip_at_execute_command_wait_okcrlf(struct espchip_data *chip, void *command, size_t size);
+
 /* helper function that checks if sequence is present in received data,
  * user is responsible for locking mutex, return start index of sequence or -EINVAL */
 static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size);
+static int rx_buffer_has_okcrlf(struct espchip_data *chip);
+static void rx_buffer_clear(struct espchip_data *chip);
 
 static const struct serdev_device_ops espchip_serial_ops = {
     .receive_buf = espchip_serial_rx,
@@ -40,6 +57,7 @@ int espchip_init(struct device_data *dev_data)
     mutex_init(&dev_data->chip->rx_buff_mutex);
     init_waitqueue_head(&dev_data->chip->rx_ready_wq);
     timer_setup(&dev_data->chip->rx_timeout_timer, rx_timeout_callback, 0);
+    init_completion(&dev_data->chip->rx_buff_ready);
 
     serdev_device_set_client_ops(dev_data->serdev, &espchip_serial_ops);
     status = serdev_device_open(dev_data->serdev);
@@ -53,10 +71,20 @@ int espchip_init(struct device_data *dev_data)
     serdev_device_set_flow_control(dev_data->serdev, false);
     serdev_device_set_parity(dev_data->serdev, SERDEV_PARITY_NONE);
 
-    /* TODO: REMOVE DUMMY WRITE */
-    char *buff = "ATE0\r\n";
-    dev_info(&dev_data->serdev->dev, "Wrote data to device\n");
-    status = serdev_device_write_buf(dev_data->serdev, buff, sizeof(buff));
+    status = espchip_reset(dev_data);
+    if (status)
+    {
+        espchip_deinit(dev_data);
+        dev_err(&dev_data->serdev->dev, "error while resetting ESP32\n");
+        return status;
+    }
+
+    status = espchip_disable_at_echo(dev_data);
+    if (status)
+    {
+        espchip_deinit(dev_data);
+        return status;
+    }
 
     return 0;
 }
@@ -101,6 +129,7 @@ static void espchip_data_received(struct device_data *dev_data)
     struct espchip_data *chip;
     chip = dev_data->chip;
 
+    /* TODO: REMOVE DRBUG CALLBACK */
     dev_info(&dev_data->serdev->dev, "in data received callback\n");
     for (int i = 0; i <= chip->rx_buff_curr_pos; i++)
     {
@@ -108,10 +137,7 @@ static void espchip_data_received(struct device_data *dev_data)
     }
     printk(KERN_CONT "\n");
 
-    u8 seq[] = {"OK\r\n"};
-    int idx = rx_buffer_has_sequence(chip, seq, sizeof(seq) - 1);
-    if (idx >= 0)
-        dev_info(&dev_data->serdev->dev, "found OKCRLF at index: %d\n", idx);
+    complete_all(&chip->rx_buff_ready);
 }
 
 static void rx_timeout_callback(struct timer_list *tlist)
@@ -126,6 +152,96 @@ static void rx_timeout_callback(struct timer_list *tlist)
     if (chip->rx_buff_curr_pos)
         espchip_data_received(dev_data);
     mutex_unlock(&chip->rx_buff_mutex);
+}
+
+static int espchip_reset(struct device_data *dev_data)
+{
+    int status;
+    struct espchip_data *chip = dev_data->chip;
+    status = mutex_lock_interruptible(&chip->io_mutex);
+    if (status)
+        return status;
+
+    status = serdev_device_write_buf(dev_data->serdev, ESPCHIP_AT_RESET, sizeof(ESPCHIP_AT_RESET));
+    if (status < 0)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    msleep(ESPCHIP_RESET_TIME_MS);
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    status = rx_buffer_has_okcrlf(chip);
+    if (status >= 0)
+        status = 0;
+
+    rx_buffer_clear(chip);
+    mutex_unlock(&chip->rx_buff_mutex);
+    mutex_unlock(&chip->io_mutex);
+    return status;
+}
+
+static int espchip_disable_at_echo(struct device_data *dev_data)
+{
+    return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_NOECHO, sizeof(ESPCHIP_AT_NOECHO));
+}
+
+static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size)
+{
+    int status;
+    status = mutex_lock_interruptible(&chip->io_mutex);
+    if (status)
+        return status;
+
+    reinit_completion(&chip->rx_buff_ready);
+    status = serdev_device_write_buf(chip->serdev, command, size);
+    if (status < 0)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    status = wait_for_completion_interruptible(&chip->rx_buff_ready);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    return 0;
+}
+
+static void espchip_at_end_command(struct espchip_data *chip)
+{
+    rx_buffer_clear(chip);
+    mutex_unlock(&chip->rx_buff_mutex);
+    mutex_unlock(&chip->io_mutex);
+}
+
+static int espchip_at_execute_command_wait_okcrlf(struct espchip_data *chip, void *command, size_t size)
+{
+    int status;
+    status = espchip_at_start_command(chip, command, size);
+    if (status)
+        return status;
+
+    status = rx_buffer_has_okcrlf(chip);
+    if (status >= 0)
+        status = 0;
+
+    espchip_at_end_command(chip);
+    return status;
 }
 
 static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_size)
@@ -150,4 +266,16 @@ static int rx_buffer_has_sequence(struct espchip_data *chip, u8 *seq, u16 seq_si
             return i;
     }
     return -EINVAL;
+}
+
+static int rx_buffer_has_okcrlf(struct espchip_data *chip)
+{
+    u8 seq[] = {"OK\r\n"};
+    return rx_buffer_has_sequence(chip, seq, sizeof(seq) - 1);
+}
+
+static void rx_buffer_clear(struct espchip_data *chip)
+{
+    chip->rx_buff_curr_pos = 0;
+    memset(chip->rx_buff, 0, ESPCHIP_RX_BUFF_SIZE);
 }

@@ -544,7 +544,7 @@ static int espndev_probe(struct serdev_device *serdev)
         espndev_wiphy_deinit(dev_data);
         return status;
     }
-
+    dev_info(&serdev->dev, "ESP probe successful\n");
     return 0;
 }
 

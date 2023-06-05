@@ -6,6 +6,7 @@
 #include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/timer.h>
+#include <linux/completion.h>
 
 #include "common.h"
 
@@ -24,6 +25,7 @@ struct espchip_data
     u16 rx_buff_curr_pos;
     struct timer_list rx_timeout_timer;
     struct mutex rx_buff_mutex;
+    struct completion rx_buff_ready;
 };
 
 int espchip_init(struct device_data *dev_data);
