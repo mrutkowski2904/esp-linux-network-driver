@@ -29,6 +29,27 @@ struct espchip_data
     struct completion rx_buff_ready;
 };
 
+enum espchip_ap_encryption_type
+{
+    ESPCHIP_ENC_OPEN = 0,
+    ESPCHIP_ENC_WEP = 1,
+    ESPCHIP_ENC_WPA_PSK = 2,
+    ESPCHIP_ENC_WPA2_PSK = 3,
+    ESPCHIP_ENC_WPA_WPA2_PSK = 4,
+    ESPCHIP_ENC_WPA2_ENTERPRISE = 5,
+    ESPCHIP_ENC_WPA3_PSK = 6,
+    ESPCHIP_ENC_WPA2_WPA3_PSK = 7,
+    ESPCHIP_ENC_WAPI_PSK = 8,
+    ESPCHIP_ENC_OWE = 9,
+};
+
+struct espchip_scan_ap_result
+{
+    bool valid;
+    char ssid_str[ESPCHIP_SSID_BUFFER_SIZE + 1];
+    enum espchip_ap_encryption_type encryption;
+};
+
 int espchip_init(struct device_data *dev_data);
 void espchip_deinit(struct device_data *dev_data);
 

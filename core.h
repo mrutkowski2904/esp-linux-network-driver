@@ -7,7 +7,7 @@
 #include "common.h"
 
 #define ESPWIPHY_NAME "esp"
-#define ESPWIPHY_MAX_SCAN_SSIDS 32
+#define ESPWIPHY_MAX_SCAN_SSIDS 8
 #define ESPNDEV_NAME "esp%d"
 
 struct wiphy_device_data

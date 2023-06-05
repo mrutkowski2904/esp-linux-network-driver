@@ -26,7 +26,7 @@ static void rx_timeout_callback(struct timer_list *tlist);
 static int espchip_reset(struct device_data *dev_data);
 static int espchip_disable_at_echo(struct device_data *dev_data);
 static int espchip_enable_sta_mode(struct device_data *dev_data);
-static int espchip_enable_scan_ap(struct device_data *dev_data);
+static int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result *aps, size_t aps_size);
 
 /* helper functions to remove redundant code */
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size);
@@ -90,7 +90,16 @@ int espchip_init(struct device_data *dev_data)
     if (status)
         goto chip_err;
 
-    espchip_enable_scan_ap(dev_data);
+    /* TODO: REMOVE DEBUG */
+    struct espchip_scan_ap_result scan_results[5];
+    espchip_scan_ap(dev_data, scan_results, 5);
+    pr_info("List of found APs\n");
+    for (int i = 0; i < 5; i++)
+    {
+        if (!scan_results[i].valid)
+            break;
+        pr_info("%s, %d\n", scan_results[i].ssid_str, scan_results[i].encryption);
+    }
 
     return 0;
 chip_err:
@@ -205,17 +214,23 @@ static int espchip_enable_sta_mode(struct device_data *dev_data)
     return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_STA_MODE, sizeof(ESPCHIP_AT_STA_MODE));
 }
 
-static int espchip_enable_scan_ap(struct device_data *dev_data)
+static int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result *aps, size_t aps_size)
 {
-    int status, ap_index, ssid_start, ssid_end;
+    int status, ap_index, ssid_start, ssid_end, aps_index;
     u8 ap_sequence[] = {"+CWLAP:("};
     u16 ssid_len;
     const u16 ap_sequence_size = sizeof(ap_sequence) - 1;
-    const u16 ecn_offset = 8; /* offset from ap_index to the encrption method */
+    const u16 ecn_offset = 8;   /* offset from ap_index to the encrption method */
     const u16 ssid_offset = 11; /* offset from ap_index to the first char of SSID */
     char ssid_tmp_str[ESPCHIP_SSID_BUFFER_SIZE + 1];
     char ecn_method;
     struct espchip_data *chip = dev_data->chip;
+
+    if (aps_size == 0)
+        return -EINVAL;
+
+    aps_index = 0;
+    memset(aps, 0, aps_size * sizeof(struct espchip_scan_ap_result));
 
     dev_info(&dev_data->serdev->dev, "scanning APs\n");
     status = espchip_at_start_command(dev_data->chip, ESPCHIP_AT_LIST_AP, sizeof(ESPCHIP_AT_LIST_AP));
@@ -234,7 +249,7 @@ static int espchip_enable_scan_ap(struct device_data *dev_data)
     }
 
     ap_index = rx_buffer_has_sequence_starting_from(chip, 0, ap_sequence, ap_sequence_size);
-    while (ap_index >= 0)
+    while (ap_index >= 0 && aps_index < aps_size)
     {
         memset(ssid_tmp_str, '\0', ESPCHIP_SSID_BUFFER_SIZE + 1);
         ssid_start = ap_index + ssid_offset;
@@ -243,8 +258,13 @@ static int espchip_enable_scan_ap(struct device_data *dev_data)
         memcpy(ssid_tmp_str, chip->rx_buff + ssid_start, ssid_len);
         ecn_method = *(chip->rx_buff + ap_index + ecn_offset);
 
+        aps[aps_index].valid = true;
+        aps[aps_index].encryption = ecn_method - '0';
+        memcpy(aps[aps_index].ssid_str, chip->rx_buff + ssid_start, ssid_len);
+
         pr_info("found AP: %s, SSID len: %d, ecn: %c\n", ssid_tmp_str, ssid_len, ecn_method);
         ap_index = rx_buffer_has_sequence_starting_from(chip, ap_index + ap_sequence_size, ap_sequence, ap_sequence_size);
+        aps_index++;
     }
 
     espchip_at_end_command(dev_data->chip);
