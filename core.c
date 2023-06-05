@@ -591,5 +591,7 @@ static __exit void espndrv_exit(void)
 
 module_init(espndrv_init);
 module_exit(espndrv_exit);
+
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Maciej Rutkowski");
 MODULE_DESCRIPTION("Network driver for ESP32");
