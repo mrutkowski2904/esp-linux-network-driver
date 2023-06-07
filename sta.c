@@ -1,6 +1,7 @@
 #include <linux/serdev.h>
 #include <linux/mutex.h>
 #include <net/cfg80211.h>
+#include <linux/delay.h>
 
 #include "sta.h"
 #include "common.h"
@@ -66,6 +67,46 @@ int espsta_scan(struct device_data *dev_data)
     mutex_unlock(&sta->sta_mutex);
     kfree(scan_results);
     return status;
+}
+
+int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data)
+{
+    int status;
+    struct espsta_data *sta;
+
+    if (conn_data == NULL)
+        return -EINVAL;
+
+    sta = dev_data->sta;
+    status = mutex_lock_interruptible(&sta->sta_mutex);
+    if (status)
+        return status;
+
+    for (int i = 0; i < ESPNDEV_MAX_SSIDS; i++)
+    {
+        if (!sta->known_aps[i].slot_used)
+        {
+            mutex_unlock(&sta->sta_mutex);
+            return -EINVAL; /* no known AP with those parameters */
+        }
+
+        if (memcmp(sta->known_aps[i].ssid, conn_data->ssid, ESPNDEV_MAX_SSID_SIZE) == 0 &&
+            (sta->known_aps[i].password_protected == conn_data->password_protected))
+        {   
+            /* connect with the AP */
+            /* TODO: actual call to the hardware */
+            status = 0;
+            msleep(150); /* TODO: remove delay.h include */
+
+            mutex_unlock(&sta->sta_mutex);
+            return status;
+        }
+    }
+    
+    mutex_unlock(&sta->sta_mutex);
+
+    /* no AP found with this parameters */
+    return -EINVAL;
 }
 
 static int espsta_ap_inform(struct device_data *dev_data)

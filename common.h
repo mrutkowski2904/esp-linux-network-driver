@@ -12,7 +12,7 @@
 
 #define ESPNDEV_MAX_SSIDS 8
 #define ESPNDEV_MAX_SSID_SIZE 32
-#define ESPNDEV_MAX_PASSWORD_SIZE 64
+#define ESPNDEV_MAX_PASSWORD_SIZE 63
 
 struct device_data
 {
