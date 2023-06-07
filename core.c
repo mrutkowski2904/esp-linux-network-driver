@@ -2,6 +2,7 @@
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
 #include <linux/inet.h>
+#include <net/cfg80211.h>
 #include <linux/ip.h>
 #include <linux/if_ether.h>
 #include <linux/tcp.h>
@@ -14,6 +15,7 @@
 #include "common.h"
 #include "core.h"
 #include "chip.h"
+#include "sta.h"
 
 /* DUMMY UDP RX PACKET DATA */
 #define DIP "193.168.1.6"
@@ -235,23 +237,6 @@ static int esp_wiphy_disconnect(struct wiphy *wiphy, struct net_device *ndev, u1
     return 0;
 }
 
-static void DUMMY_BSS_DISCOVERED(struct device_data *dev_data)
-{
-    struct cfg80211_bss *bss = NULL;
-    struct cfg80211_inform_bss data = {
-        .chan = &dev_data->wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
-        .scan_width = NL80211_BSS_CHAN_WIDTH_20,
-        .signal = 1337,
-    };
-    char bssid[ETH_ALEN] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
-    char ie[DUMMY_SSID_SIZE + 2] = {WLAN_EID_SSID, DUMMY_SSID_SIZE};
-    memcpy(ie + 2, DUMMY_SSID, DUMMY_SSID_SIZE);
-    memcpy(dev_data->connecting_bssid, bssid, ETH_ALEN);
-
-    bss = cfg80211_inform_bss_data(dev_data->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, bssid, 0, WLAN_CAPABILITY_ESS, 100,
-                                   ie, sizeof(ie), GFP_KERNEL);
-    cfg80211_put_bss(dev_data->wiphy, bss);
-}
 
 static void esp_wiphy_scan_work_cb(struct work_struct *work)
 {
@@ -264,7 +249,7 @@ static void esp_wiphy_scan_work_cb(struct work_struct *work)
     /* DUMMY SLEEP REMOVE IN THE FUTURE */
     msleep(200);
 
-    DUMMY_BSS_DISCOVERED(dev_data);
+    espsta_scan(dev_data);
 
     if (down_interruptible(&dev_data->wiphy_sem))
         return;
@@ -292,7 +277,7 @@ static void esp_wiphy_connect_work_cb(struct work_struct *work)
     else
     {
         /* TODO: look for bssid for this ssid */
-        DUMMY_BSS_DISCOVERED(dev_data);
+        /* DUMMY_BSS_DISCOVERED(dev_data); */
 
         cfg80211_connect_bss(dev_data->ndev, dev_data->connecting_bssid, NULL, NULL, 0, NULL, 0, WLAN_STATUS_SUCCESS, GFP_KERNEL,
                              NL80211_TIMEOUT_UNSPECIFIED);
@@ -501,24 +486,38 @@ static int espndev_probe(struct serdev_device *serdev)
     serdev_device_set_drvdata(serdev, dev_data);
     dev_data->serdev = serdev;
     status = espchip_init(dev_data);
-    if(status)
+    if (status)
     {
         dev_err(&serdev->dev, "error while initializing the ESP32 module\n");
         return status;
     }
+
+    status = espsta_init(dev_data);
+    if (status)
+        goto espsta_init_fail;
+
     sema_init(&dev_data->wiphy_sem, 1);
 
     dev_data->scan_workqueue = create_singlethread_workqueue("esp_scan_wq");
     if (dev_data->scan_workqueue == NULL)
-        return -ENOMEM;
+    {
+        status = -ENOMEM;
+        goto scanwq_init_fail;
+    }
 
     dev_data->connect_workqueue = create_singlethread_workqueue("esp_conn_wq");
     if (dev_data->connect_workqueue == NULL)
-        return -ENOMEM;
+    {
+        status = -ENOMEM;
+        goto connwq_init_fail;
+    }
 
     dev_data->disconnect_workqueue = create_singlethread_workqueue("esp_discon_wq");
     if (dev_data->disconnect_workqueue == NULL)
-        return -ENOMEM;
+    {
+        status = -ENOMEM;
+        goto discwq_init_fail;
+    }
 
     /* TODO: REMOVE */
     dev_data->debug_workqueue = create_singlethread_workqueue("esp_debug_wq");
@@ -532,20 +531,27 @@ static int espndev_probe(struct serdev_device *serdev)
 
     status = espndev_wiphy_init(dev_data);
     if (status)
-    {
-        destroy_workqueue(dev_data->scan_workqueue);
-        return status;
-    }
+        goto wiphy_init_fail;
 
     status = espndev_netdev_init(dev_data);
     if (status)
-    {
-        destroy_workqueue(dev_data->scan_workqueue);
-        espndev_wiphy_deinit(dev_data);
-        return status;
-    }
+        goto netdev_init_fail;
+
     dev_info(&serdev->dev, "espnetcard probe successful\n");
     return 0;
+
+netdev_init_fail:
+    espndev_wiphy_deinit(dev_data);
+wiphy_init_fail:
+    destroy_workqueue(dev_data->disconnect_workqueue);
+discwq_init_fail:
+    destroy_workqueue(dev_data->connect_workqueue);
+connwq_init_fail:
+    destroy_workqueue(dev_data->scan_workqueue);
+scanwq_init_fail:
+espsta_init_fail:
+    espchip_deinit(dev_data);
+    return status;
 }
 
 static void espndev_remove(struct serdev_device *serdev)
@@ -594,4 +600,4 @@ module_exit(espndrv_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Maciej Rutkowski");
-MODULE_DESCRIPTION("Network driver for ESP32");
+MODULE_DESCRIPTION("Network driver for ESP32 chip");

@@ -10,6 +10,10 @@
 #define DUMMY_SSID "dummy_network"
 #define DUMMY_SSID_SIZE (sizeof(DUMMY_SSID) - 1)
 
+#define ESPNDEV_MAX_SSIDS 8
+#define ESPNDEV_MAX_SSID_SIZE 32
+#define ESPNDEV_MAX_PASSWORD_SIZE 64
+
 struct device_data
 {
     struct serdev_device *serdev;
@@ -33,6 +37,7 @@ struct device_data
     u16 disconnect_reason;
 
     struct espchip_data *chip;
+    struct espsta_data *sta;
 
     /* TODO: REMOVE */
     struct workqueue_struct *debug_workqueue;

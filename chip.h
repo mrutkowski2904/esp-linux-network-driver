@@ -53,4 +53,6 @@ struct espchip_scan_ap_result
 int espchip_init(struct device_data *dev_data);
 void espchip_deinit(struct device_data *dev_data);
 
+int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result *aps, size_t aps_size);
+
 #endif /* ESPNET_CHIP_H */
