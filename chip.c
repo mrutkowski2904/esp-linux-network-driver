@@ -13,9 +13,13 @@
 #define ESPCHIP_AT_NOECHO "ATE0\r\n"
 #define ESPCHIP_AT_STA_MODE "AT+CWMODE=1\r\n"
 #define ESPCHIP_AT_LIST_AP "AT+CWLAP\r\n"
+#define ESPCHIP_AT_CONNECT_AP "AT+CWJAP=\"%s\"\r\n"
+#define ESPCHIP_AT_CONNECT_AP_PASSWORD "AT+CWJAP=\"%s\",\"%s\"\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
 #define ESPCHIP_SCAN_TIME_MS 5000
+#define ESPCHIP_AP_CONNECT_TIME_MS 4000
+#define ESPCHIP_CONNECT_AP_BUFFER_SIZE (ESPNDEV_MAX_SSID_SIZE + ESPNDEV_MAX_PASSWORD_SIZE + 20)
 
 /* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
@@ -203,7 +207,7 @@ int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result 
     char ecn_method;
     struct espchip_data *chip = dev_data->chip;
 
-    if (aps_size == 0)
+    if (aps_size == 0 || aps == NULL)
         return -EINVAL;
 
     aps_index = 0;
@@ -242,6 +246,49 @@ int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result 
     }
 
     espchip_at_end_command(dev_data->chip);
+    return 0;
+}
+
+int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *password_str, bool use_password)
+{
+    int status;
+    bool connected;
+    struct espchip_data *chip = dev_data->chip;
+    char at_cmd[ESPCHIP_CONNECT_AP_BUFFER_SIZE];
+    size_t at_cmd_len;
+    u8 connection_ok_sequence[] = {"WIFI CONNECTED\r\n"};
+
+    if (ssid_str == NULL)
+        return -EINVAL;
+
+    if (use_password && password_str == NULL)
+        return -EINVAL;
+
+    if (use_password)
+        at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_CONNECT_AP_PASSWORD, ssid_str, password_str);
+    else
+        at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_CONNECT_AP, ssid_str);
+
+    status = espchip_at_start_command(chip, at_cmd, at_cmd_len);
+    if (status)
+        return status;
+    
+    mutex_unlock(&chip->rx_buff_mutex);
+    msleep(ESPCHIP_AP_CONNECT_TIME_MS);
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    connected = rx_buffer_has_sequence(chip, connection_ok_sequence, sizeof(connection_ok_sequence) - 1) >= 0;
+    espchip_at_end_command(dev_data->chip);
+
+    if(!connected)
+        return -ECONNREFUSED;
+    
     return 0;
 }
 
