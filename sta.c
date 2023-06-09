@@ -12,14 +12,11 @@ static int espsta_ap_inform(struct device_data *dev_data);
 
 int espsta_init(struct device_data *dev_data)
 {
-    struct espsta_data *sta;
     dev_data->sta = devm_kzalloc(&dev_data->serdev->dev, sizeof(struct espsta_data), GFP_KERNEL);
     if (dev_data->sta == NULL)
         return -ENOMEM;
 
-    sta = dev_data->sta;
-    mutex_init(&sta->sta_mutex);
-
+    mutex_init(&dev_data->sta->sta_mutex);
     return 0;
 }
 

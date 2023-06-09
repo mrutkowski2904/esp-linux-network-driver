@@ -16,6 +16,7 @@
 #include "core.h"
 #include "chip.h"
 #include "sta.h"
+#include "link.h"
 
 /* DUMMY UDP RX PACKET DATA */
 #define DIP "193.168.1.6"
@@ -329,7 +330,7 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
     if (ip_header && ip_header->version == 4)
     {
         pr_info("IPv4 header present, saddr = %pI4\n", &ip_header->saddr);
-        
+
         if (ip_header->protocol == IPPROTO_UDP)
         {
             struct udphdr *udp_header = udp_hdr(skb);
@@ -513,6 +514,10 @@ static int espndev_probe(struct serdev_device *serdev)
     if (status)
         goto espsta_init_fail;
 
+    status = esplink_init(dev_data);
+    if (status)
+        goto esplink_init_fail;
+
     sema_init(&dev_data->wiphy_sem, 1);
 
     dev_data->scan_workqueue = create_singlethread_workqueue("esp_scan_wq");
@@ -566,6 +571,9 @@ discwq_init_fail:
 connwq_init_fail:
     destroy_workqueue(dev_data->scan_workqueue);
 scanwq_init_fail:
+    esplink_deinit(dev_data);
+esplink_init_fail:
+    espsta_deinit(dev_data);
 espsta_init_fail:
     espchip_deinit(dev_data);
     return status;
@@ -587,6 +595,8 @@ static void espndev_remove(struct serdev_device *serdev)
 
     espndev_netdev_deinit(dev_data);
     espndev_wiphy_deinit(dev_data);
+    esplink_deinit(dev_data);
+    espsta_deinit(dev_data);
     espchip_deinit(dev_data);
 
     /* TODO: REMOVE */

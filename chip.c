@@ -5,6 +5,7 @@
 #include <linux/completion.h>
 #include <linux/jiffies.h>
 #include <linux/delay.h>
+#include <linux/types.h>
 
 #include "common.h"
 #include "chip.h"
@@ -18,6 +19,7 @@
 #define ESPCHIP_AT_DISCONNECT_AP "AT+CWQAP\r\n"
 #define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
 #define ESPCHIP_AT_MULTIPLE_CONNECTIONS "AT+CIPMUX=1\r\n"
+#define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
 #define ESPCHIP_SCAN_TIME_MS 3500
@@ -335,6 +337,25 @@ int espchip_disconnect_ap(struct device_data *dev_data)
     rx_buffer_clear(chip);
     mutex_unlock(&chip->rx_buff_mutex);
     mutex_unlock(&chip->io_mutex);
+    return status;
+}
+
+int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port)
+{
+    int status;
+    char at_cmd[65];
+    size_t at_cmd_len;
+    u8 ok_sequence[] = {",CONNECT\r\n"};
+
+    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_ALLOW_UDP_RX_TX, link_num, &remote_ip, htons(remote_port), htons(host_port));
+    status = espchip_at_start_command(dev_data->chip, at_cmd, at_cmd_len);
+    if (status)
+        return status;
+
+    status = rx_buffer_has_sequence(dev_data->chip, ok_sequence, sizeof(ok_sequence) - 1);
+    if (status >= 0)
+        status = 0;
+    espchip_at_end_command(dev_data->chip);
     return status;
 }
 

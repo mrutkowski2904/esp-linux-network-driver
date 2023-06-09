@@ -57,4 +57,7 @@ int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result 
 int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *password_str, bool use_password);
 int espchip_disconnect_ap(struct device_data *dev_data);
 
+/* ip/ports in big endian order */
+int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port);
+
 #endif /* ESPNET_CHIP_H */

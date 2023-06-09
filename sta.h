@@ -1,7 +1,6 @@
 #ifndef ESPNET_STA_H
 #define ESPNET_STA_H
 
-#include <linux/serdev.h>
 #include <linux/mutex.h>
 #include <linux/if_ether.h>
 
