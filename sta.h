@@ -19,7 +19,6 @@ struct espsta_connect_ap_params
     /* + 1 for \0 */
     char ssid[ESPNDEV_MAX_SSID_SIZE + 1];
     char password[ESPNDEV_MAX_PASSWORD_SIZE + 1];
-    bool password_protected;
 };
 
 struct espsta_data

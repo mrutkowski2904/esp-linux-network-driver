@@ -6,10 +6,6 @@
 #include <linux/workqueue.h>
 #include <linux/serdev.h>
 
-/* TODO: REMOVE */
-#define DUMMY_SSID "dummy_network"
-#define DUMMY_SSID_SIZE (sizeof(DUMMY_SSID) - 1)
-
 #define ESPNDEV_MAX_SSIDS 8
 #define ESPNDEV_MAX_SSID_SIZE 32
 #define ESPNDEV_MAX_PASSWORD_SIZE 63
@@ -29,7 +25,7 @@ struct device_data
 
     struct workqueue_struct *connect_workqueue;
     struct work_struct connect_work;
-    char connecting_ssid[sizeof(DUMMY_SSID)];
+    char connecting_ssid_str[ESPNDEV_MAX_SSID_SIZE + 1];
     u8 connecting_bssid[ETH_ALEN];
 
     struct workqueue_struct *disconnect_workqueue;

@@ -200,27 +200,17 @@ static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *sca
 
 static int esp_wiphy_connect(struct wiphy *wiphy, struct net_device *ndev, struct cfg80211_connect_params *conn_params)
 {
-    size_t ssid_len;
     struct device_data *dev_data;
     struct wiphy_device_data *wdev_data;
 
     wdev_data = wiphy_priv(wiphy);
     dev_data = wdev_data->dev_data;
 
-    /* DUMMY - REMOVE IN THE FUTURE */
-    ssid_len = conn_params->ssid_len > 15 ? 15 : conn_params->ssid_len;
-
     if (down_interruptible(&dev_data->wiphy_sem))
         return -ERESTARTSYS;
-
-    memcpy(dev_data->connecting_ssid, conn_params->ssid, conn_params->ssid_len);
-    dev_data->connecting_ssid[ssid_len] = 0;
+    memset(dev_data->connecting_ssid_str, 0, ESPNDEV_MAX_SSID_SIZE + 1);
+    memcpy(dev_data->connecting_ssid_str, conn_params->ssid, conn_params->ssid_len);
     up(&dev_data->wiphy_sem);
-
-    if (conn_params->crypto.psk)
-        pr_info("DEBUG CONNECT CB: crypto psk present\n");
-    else
-        pr_info("DEBUG CONNECT CB: no crypto psk\n");
 
     if (!queue_work(dev_data->connect_workqueue, &dev_data->connect_work))
         return -EBUSY;
@@ -282,28 +272,26 @@ static void esp_wiphy_scan_work_cb(struct work_struct *work)
 
 static void esp_wiphy_connect_work_cb(struct work_struct *work)
 {
+    int status;
+    size_t ssid_len;
     struct device_data *dev_data;
+    struct espsta_connect_ap_params conn_params;
 
     dev_data = container_of(work, struct device_data, connect_work);
-    /* DUMMY SLEEP REMOVE IN THE FUTURE */
-    msleep(300);
+    memset(&conn_params, 0, sizeof(struct espsta_connect_ap_params));
+
     if (down_interruptible(&dev_data->wiphy_sem))
         return;
+    ssid_len = strlen(dev_data->connecting_ssid_str);
+    memcpy(conn_params.ssid, dev_data->connecting_ssid_str, ssid_len);
+    up(&dev_data->wiphy_sem);
 
-    if (memcmp(dev_data->connecting_ssid, DUMMY_SSID, sizeof(DUMMY_SSID)) != 0)
-    {
+    status = espsta_connect_ap(dev_data, &conn_params);
+    if (status)
         cfg80211_connect_timeout(dev_data->ndev, NULL, NULL, 0, GFP_KERNEL, NL80211_TIMEOUT_SCAN);
-    }
     else
-    {
-        /* TODO: look for bssid for this ssid */
-        /* DUMMY_BSS_DISCOVERED(dev_data); */
-
         cfg80211_connect_bss(dev_data->ndev, dev_data->connecting_bssid, NULL, NULL, 0, NULL, 0, WLAN_STATUS_SUCCESS, GFP_KERNEL,
                              NL80211_TIMEOUT_UNSPECIFIED);
-    }
-    dev_data->connecting_ssid[0] = 0;
-    up(&dev_data->wiphy_sem);
 }
 
 static void esp_wiphy_disconnect_work_cb(struct work_struct *work)
