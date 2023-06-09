@@ -328,7 +328,8 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
     struct iphdr *ip_header = ip_hdr(skb);
     if (ip_header && ip_header->version == 4)
     {
-        pr_info("IPv4 header present\n");
+        pr_info("IPv4 header present, saddr = %pI4\n", &ip_header->saddr);
+        
         if (ip_header->protocol == IPPROTO_UDP)
         {
             struct udphdr *udp_header = udp_hdr(skb);

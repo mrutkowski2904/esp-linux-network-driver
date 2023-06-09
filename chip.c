@@ -17,9 +17,10 @@
 #define ESPCHIP_AT_CONNECT_AP_PASSWORD "AT+CWJAP=\"%s\",\"%s\"\r\n"
 #define ESPCHIP_AT_DISCONNECT_AP "AT+CWQAP\r\n"
 #define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
+#define ESPCHIP_AT_MULTIPLE_CONNECTIONS "AT+CIPMUX=1\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
-#define ESPCHIP_SCAN_TIME_MS 5000
+#define ESPCHIP_SCAN_TIME_MS 3500
 #define ESPCHIP_AP_CONNECT_TIME_MS 4000
 #define ESPCHIP_AP_DISCONNECT_TIME_MS 350
 #define ESPCHIP_CONNECT_AP_BUFFER_SIZE (ESPNDEV_MAX_SSID_SIZE + ESPNDEV_MAX_PASSWORD_SIZE + 20)
@@ -34,6 +35,7 @@ static int espchip_reset(struct device_data *dev_data);
 static int espchip_disable_at_echo(struct device_data *dev_data);
 static int espchip_enable_sta_mode(struct device_data *dev_data);
 static int espchip_disable_auto_connect_on_start(struct device_data *dev_data);
+static int espchip_enable_multiple_connections(struct device_data *dev_data);
 
 /* helper functions to remove redundant code */
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size);
@@ -102,6 +104,10 @@ int espchip_init(struct device_data *dev_data)
         goto chip_err;
 
     status = espchip_enable_sta_mode(dev_data);
+    if (status)
+        goto chip_err;
+
+    status = espchip_enable_multiple_connections(dev_data);
     if (status)
         goto chip_err;
 
@@ -345,6 +351,11 @@ static int espchip_enable_sta_mode(struct device_data *dev_data)
 static int espchip_disable_auto_connect_on_start(struct device_data *dev_data)
 {
     return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_DISABLE_CONNECT_ON_START, sizeof(ESPCHIP_AT_DISABLE_CONNECT_ON_START));
+}
+
+static int espchip_enable_multiple_connections(struct device_data *dev_data)
+{
+    return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_MULTIPLE_CONNECTIONS, sizeof(ESPCHIP_AT_MULTIPLE_CONNECTIONS));
 }
 
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size)
