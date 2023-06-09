@@ -1,6 +1,7 @@
 #include <linux/serdev.h>
 #include <linux/mutex.h>
 #include <net/cfg80211.h>
+#include <linux/if_ether.h>
 #include <linux/delay.h>
 
 #include "sta.h"
@@ -31,6 +32,7 @@ int espsta_scan(struct device_data *dev_data)
     int status;
     struct espsta_data *sta;
     struct espchip_scan_ap_result *scan_results;
+    char bssid[ETH_ALEN] = {0x00, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
 
     sta = dev_data->sta;
 
@@ -58,10 +60,11 @@ int espsta_scan(struct device_data *dev_data)
     {
         if (!scan_results[i].valid)
             break;
-
+        bssid[0] = i;
         sta->known_aps[i].slot_used = true;
         sta->known_aps[i].password_protected = (scan_results[i].encryption != ESPCHIP_ENC_OPEN);
         memcpy(sta->known_aps[i].ssid, scan_results[i].ssid_str, ESPNDEV_MAX_SSID_SIZE);
+        memcpy(sta->known_aps[i].bssid, bssid, ETH_ALEN);
     }
     status = espsta_ap_inform(dev_data);
     mutex_unlock(&sta->sta_mutex);
@@ -86,12 +89,12 @@ int espsta_scan_cached(struct device_data *dev_data)
     return status;
 }
 
-int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data)
+int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data, u8 *connected_bssid)
 {
     int status;
     struct espsta_data *sta;
 
-    if (conn_data == NULL)
+    if (conn_data == NULL || connected_bssid == NULL)
         return -EINVAL;
 
     sta = dev_data->sta;
@@ -118,7 +121,7 @@ int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_par
                 dev_err(&dev_data->serdev->dev, "connecting to password protected networks is not supported\n");
                 return -ENOTSUPP;
             }
-
+            memcpy(connected_bssid, sta->known_aps[i].bssid, ETH_ALEN);
             status = espchip_connect_ap(dev_data, sta->known_aps[i].ssid, NULL, false);
             mutex_unlock(&sta->sta_mutex);
             return status;
@@ -141,7 +144,6 @@ static int espsta_ap_inform(struct device_data *dev_data)
         .scan_width = NL80211_BSS_CHAN_WIDTH_20,
         .signal = 1337,
     };
-    char bssid[ETH_ALEN] = {0x00, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
     char ie[ESPNDEV_MAX_SSID_SIZE + 2] = {WLAN_EID_SSID};
 
     sta = dev_data->sta;
@@ -150,11 +152,10 @@ static int espsta_ap_inform(struct device_data *dev_data)
         if (!sta->known_aps[i].slot_used)
             break;
 
-        bssid[0] = i;
         ssid_len = strlen(sta->known_aps[i].ssid);
         memcpy(ie + 2, sta->known_aps[i].ssid, ssid_len);
         ie[1] = ssid_len;
-        bss = cfg80211_inform_bss_data(dev_data->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, bssid, 0, WLAN_CAPABILITY_ESS, 100,
+        bss = cfg80211_inform_bss_data(dev_data->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, sta->known_aps[i].bssid, 0, WLAN_CAPABILITY_ESS, 100,
                                        ie, ssid_len + 2, GFP_KERNEL);
         if (bss == NULL)
             return -ENOMEM;

@@ -26,7 +26,6 @@ struct device_data
     struct workqueue_struct *connect_workqueue;
     struct work_struct connect_work;
     char connecting_ssid_str[ESPNDEV_MAX_SSID_SIZE + 1];
-    u8 connecting_bssid[ETH_ALEN];
 
     struct workqueue_struct *disconnect_workqueue;
     struct work_struct disconnect_work;

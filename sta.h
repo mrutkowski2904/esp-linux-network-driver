@@ -3,6 +3,7 @@
 
 #include <linux/serdev.h>
 #include <linux/mutex.h>
+#include <linux/if_ether.h>
 
 #include "common.h"
 
@@ -10,6 +11,7 @@ struct espsta_known_ap
 {
     /* + 1 for \0 */
     char ssid[ESPNDEV_MAX_SSID_SIZE + 1];
+    u8 bssid[ETH_ALEN];
     bool password_protected;
     bool slot_used;
 };
@@ -32,6 +34,6 @@ void espsta_deinit(struct device_data *dev_data);
 
 int espsta_scan(struct device_data *dev_data);
 int espsta_scan_cached(struct device_data *dev_data);
-int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data);
+int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data, u8 *connected_bssid);
 
 #endif /* ESPNET_STA_H */

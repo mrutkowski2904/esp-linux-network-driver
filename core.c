@@ -274,6 +274,7 @@ static void esp_wiphy_connect_work_cb(struct work_struct *work)
 {
     int status;
     size_t ssid_len;
+    u8 connecting_bssid[ETH_ALEN];
     struct device_data *dev_data;
     struct espsta_connect_ap_params conn_params;
 
@@ -286,12 +287,18 @@ static void esp_wiphy_connect_work_cb(struct work_struct *work)
     memcpy(conn_params.ssid, dev_data->connecting_ssid_str, ssid_len);
     up(&dev_data->wiphy_sem);
 
-    status = espsta_connect_ap(dev_data, &conn_params);
+    status = espsta_connect_ap(dev_data, &conn_params, connecting_bssid);
     if (status)
+    {
+        dev_info(&dev_data->serdev->dev, "AP connection could not be established\n");
         cfg80211_connect_timeout(dev_data->ndev, NULL, NULL, 0, GFP_KERNEL, NL80211_TIMEOUT_SCAN);
+    }
     else
-        cfg80211_connect_bss(dev_data->ndev, dev_data->connecting_bssid, NULL, NULL, 0, NULL, 0, WLAN_STATUS_SUCCESS, GFP_KERNEL,
+    {
+        dev_info(&dev_data->serdev->dev, "AP connection established\n");
+        cfg80211_connect_bss(dev_data->ndev, connecting_bssid, NULL, NULL, 0, NULL, 0, WLAN_STATUS_SUCCESS, GFP_KERNEL,
                              NL80211_TIMEOUT_UNSPECIFIED);
+    }
 }
 
 static void esp_wiphy_disconnect_work_cb(struct work_struct *work)
