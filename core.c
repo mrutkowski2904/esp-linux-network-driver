@@ -177,6 +177,10 @@ static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *sca
     wdev_data = wiphy_priv(wiphy);
     dev_data = wdev_data->dev_data;
 
+    /* no passive scans */
+    if (!scan_req->n_ssids)
+        return 0;
+
     if (down_interruptible(&dev_data->wiphy_sem))
         return -ERESTARTSYS;
 
@@ -213,6 +217,11 @@ static int esp_wiphy_connect(struct wiphy *wiphy, struct net_device *ndev, struc
     dev_data->connecting_ssid[ssid_len] = 0;
     up(&dev_data->wiphy_sem);
 
+    if (conn_params->crypto.psk)
+        pr_info("DEBUG CONNECT CB: crypto psk present\n");
+    else
+        pr_info("DEBUG CONNECT CB: no crypto psk\n");
+
     if (!queue_work(dev_data->connect_workqueue, &dev_data->connect_work))
         return -EBUSY;
 
@@ -237,25 +246,36 @@ static int esp_wiphy_disconnect(struct wiphy *wiphy, struct net_device *ndev, u1
     return 0;
 }
 
-
 static void esp_wiphy_scan_work_cb(struct work_struct *work)
 {
     struct device_data *dev_data;
+    struct wiphy_device_data *wdev_data;
     struct cfg80211_scan_info scan_info;
+    bool cached = false;
 
     dev_data = container_of(work, struct device_data, scan_work);
+    wdev_data = wiphy_priv(dev_data->wiphy);
     scan_info.aborted = false;
 
-    /* DUMMY SLEEP REMOVE IN THE FUTURE */
-    msleep(200);
+    if (down_interruptible(&dev_data->wiphy_sem))
+        return;
 
-    espsta_scan(dev_data);
+    if (time_is_after_jiffies(wdev_data->last_scan_jiffies + msecs_to_jiffies(ESPWIPHY_MIN_TIME_BETWEEN_SCANS_MS)))
+    {
+        dev_info(&dev_data->serdev->dev, "using cached scan results\n");
+        cached = true;
+    }
+    up(&dev_data->wiphy_sem);
+
+    cached ? espsta_scan_cached(dev_data) : espsta_scan(dev_data);
 
     if (down_interruptible(&dev_data->wiphy_sem))
         return;
 
     cfg80211_scan_done(dev_data->scan_req, &scan_info);
     dev_data->scan_req = NULL;
+    if (!cached)
+        wdev_data->last_scan_jiffies = jiffies;
 
     up(&dev_data->wiphy_sem);
 }

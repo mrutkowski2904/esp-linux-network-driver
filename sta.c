@@ -69,6 +69,23 @@ int espsta_scan(struct device_data *dev_data)
     return status;
 }
 
+int espsta_scan_cached(struct device_data *dev_data)
+{
+    int status;
+    struct espsta_data *sta;
+    
+    sta = dev_data->sta;
+    status = mutex_lock_interruptible(&sta->sta_mutex);
+    if (status)
+        return status;
+    
+    /* it doesn't work when scan finishes immediately */
+    msleep(10);
+    status = espsta_ap_inform(dev_data);
+    mutex_unlock(&sta->sta_mutex);
+    return status;
+}
+
 int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data)
 {
     int status;
