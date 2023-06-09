@@ -309,6 +309,7 @@ static void esp_wiphy_disconnect_work_cb(struct work_struct *work)
     if (down_interruptible(&dev_data->wiphy_sem))
         return;
 
+    espsta_disconnect_ap(dev_data);
     cfg80211_disconnected(dev_data->ndev, dev_data->disconnect_reason, NULL, 0, true, GFP_KERNEL);
     dev_data->disconnect_reason = 0;
 

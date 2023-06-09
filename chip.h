@@ -55,5 +55,6 @@ void espchip_deinit(struct device_data *dev_data);
 
 int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result *aps, size_t aps_size);
 int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *password_str, bool use_password);
+int espchip_disconnect_ap(struct device_data *dev_data);
 
 #endif /* ESPNET_CHIP_H */

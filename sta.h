@@ -35,5 +35,6 @@ void espsta_deinit(struct device_data *dev_data);
 int espsta_scan(struct device_data *dev_data);
 int espsta_scan_cached(struct device_data *dev_data);
 int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_params *conn_data, u8 *connected_bssid);
+int espsta_disconnect_ap(struct device_data *dev_data);
 
 #endif /* ESPNET_STA_H */

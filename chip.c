@@ -15,10 +15,13 @@
 #define ESPCHIP_AT_LIST_AP "AT+CWLAP\r\n"
 #define ESPCHIP_AT_CONNECT_AP "AT+CWJAP=\"%s\"\r\n"
 #define ESPCHIP_AT_CONNECT_AP_PASSWORD "AT+CWJAP=\"%s\",\"%s\"\r\n"
+#define ESPCHIP_AT_DISCONNECT_AP "AT+CWQAP\r\n"
+#define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
 #define ESPCHIP_SCAN_TIME_MS 5000
 #define ESPCHIP_AP_CONNECT_TIME_MS 4000
+#define ESPCHIP_AP_DISCONNECT_TIME_MS 350
 #define ESPCHIP_CONNECT_AP_BUFFER_SIZE (ESPNDEV_MAX_SSID_SIZE + ESPNDEV_MAX_PASSWORD_SIZE + 20)
 
 /* executed on serial rx */
@@ -30,6 +33,7 @@ static void rx_timeout_callback(struct timer_list *tlist);
 static int espchip_reset(struct device_data *dev_data);
 static int espchip_disable_at_echo(struct device_data *dev_data);
 static int espchip_enable_sta_mode(struct device_data *dev_data);
+static int espchip_disable_auto_connect_on_start(struct device_data *dev_data);
 
 /* helper functions to remove redundant code */
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size);
@@ -80,6 +84,14 @@ int espchip_init(struct device_data *dev_data)
     serdev_device_set_baudrate(dev_data->serdev, ESPCHIP_BAUDRATE);
     serdev_device_set_flow_control(dev_data->serdev, false);
     serdev_device_set_parity(dev_data->serdev, SERDEV_PARITY_NONE);
+
+    status = espchip_disable_auto_connect_on_start(dev_data);
+    if (status)
+        goto chip_err;
+
+    status = espchip_disconnect_ap(dev_data);
+    if (status)
+        goto chip_err;
 
     status = espchip_reset(dev_data);
     if (status)
@@ -272,7 +284,7 @@ int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *passw
     status = espchip_at_start_command(chip, at_cmd, at_cmd_len);
     if (status)
         return status;
-    
+
     mutex_unlock(&chip->rx_buff_mutex);
     msleep(ESPCHIP_AP_CONNECT_TIME_MS);
 
@@ -286,10 +298,38 @@ int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *passw
     connected = rx_buffer_has_sequence(chip, connection_ok_sequence, sizeof(connection_ok_sequence) - 1) >= 0;
     espchip_at_end_command(dev_data->chip);
 
-    if(!connected)
+    if (!connected)
         return -ECONNREFUSED;
-    
+
     return 0;
+}
+
+int espchip_disconnect_ap(struct device_data *dev_data)
+{
+    int status;
+    struct espchip_data *chip = dev_data->chip;
+    status = mutex_lock_interruptible(&chip->io_mutex);
+    if (status)
+        return status;
+
+    status = serdev_device_write_buf(dev_data->serdev, ESPCHIP_AT_DISCONNECT_AP, sizeof(ESPCHIP_AT_DISCONNECT_AP));
+    if (status < 0)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    msleep(ESPCHIP_AP_DISCONNECT_TIME_MS);
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    rx_buffer_clear(chip);
+    mutex_unlock(&chip->rx_buff_mutex);
+    mutex_unlock(&chip->io_mutex);
+    return status;
 }
 
 static int espchip_disable_at_echo(struct device_data *dev_data)
@@ -300,6 +340,11 @@ static int espchip_disable_at_echo(struct device_data *dev_data)
 static int espchip_enable_sta_mode(struct device_data *dev_data)
 {
     return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_STA_MODE, sizeof(ESPCHIP_AT_STA_MODE));
+}
+
+static int espchip_disable_auto_connect_on_start(struct device_data *dev_data)
+{
+    return espchip_at_execute_command_wait_okcrlf(dev_data->chip, ESPCHIP_AT_DISABLE_CONNECT_ON_START, sizeof(ESPCHIP_AT_DISABLE_CONNECT_ON_START));
 }
 
 static int espchip_at_start_command(struct espchip_data *chip, void *command, size_t size)
