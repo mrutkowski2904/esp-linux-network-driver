@@ -340,11 +340,21 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
             pr_info("Len: %d\n", be16_to_cpu(udp_header->len));
             pr_info("Check: %d\n", be16_to_cpu(udp_header->check));
 
+            u8 dummy_test[] = {"test data from rpi"};
+
+            esplink_schedule_udp_send(dev_data, in_aton("192.168.1.104"),
+                                      udp_header->dest,
+                                      ip_header->saddr,
+                                      udp_header->source, dummy_test, sizeof(dummy_test));
+
+            /* TODO: DEBUG REMOVE */
+            /*
             if (be16_to_cpu(udp_header->dest) == 55555)
             {
                 pr_info("trigger port active, sending dummy response\n");
                 queue_work(dev_data->debug_workqueue, &dev_data->debug_work);
             }
+            */
         }
         else if (ip_header->protocol == IPPROTO_TCP)
         {

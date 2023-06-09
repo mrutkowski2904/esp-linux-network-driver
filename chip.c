@@ -10,6 +10,10 @@
 #include "common.h"
 #include "chip.h"
 
+#define ESPCHIP_BAUDRATE 115200
+#define ESPCHIP_UDP_SEND_MAX_RETRIES 5
+#define ESPCHIP_UDP_SEND_RETRY_TIME_MS 20
+
 #define ESPCHIP_AT_RESET "AT+RST\r\n"
 #define ESPCHIP_AT_NOECHO "ATE0\r\n"
 #define ESPCHIP_AT_STA_MODE "AT+CWMODE=1\r\n"
@@ -19,13 +23,20 @@
 #define ESPCHIP_AT_DISCONNECT_AP "AT+CWQAP\r\n"
 #define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
 #define ESPCHIP_AT_MULTIPLE_CONNECTIONS "AT+CIPMUX=1\r\n"
-#define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d\r\n"
+/* #define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d\r\n" */
+#define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d\r\n"
+#define ESPCHIP_AT_UDP_TX "AT+CIPSEND=%d,%d\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
 #define ESPCHIP_SCAN_TIME_MS 3500
 #define ESPCHIP_AP_CONNECT_TIME_MS 4000
 #define ESPCHIP_AP_DISCONNECT_TIME_MS 350
+#define ESPCHIP_SERIAL_RX_TIMEOUT_MS 75
+
+#define ESPCHIP_RX_BUFF_SIZE 1600
+#define ESPCHIP_SEND_UDP_CMD_BUFFER_SIZE 30
 #define ESPCHIP_CONNECT_AP_BUFFER_SIZE (ESPNDEV_MAX_SSID_SIZE + ESPNDEV_MAX_PASSWORD_SIZE + 20)
+#define ESPCHIP_ALLOW_UDP_RX_TX_CMD_BUFFER_SIZE 65
 
 /* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
@@ -123,97 +134,6 @@ void espchip_deinit(struct device_data *dev_data)
 {
     serdev_device_close(dev_data->serdev);
     del_timer_sync(&dev_data->chip->rx_timeout_timer);
-}
-
-/* can sleep */
-static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size)
-{
-    struct device_data *dev_data;
-    struct espchip_data *chip;
-    dev_data = serdev_device_get_drvdata(serdev);
-    chip = dev_data->chip;
-
-    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
-        return 0;
-
-    /* more data that the driver can handle */
-    if ((size + chip->rx_buff_curr_pos) >= ESPCHIP_RX_BUFF_SIZE)
-    {
-        /* stop the timeout timer */
-        del_timer_sync(&chip->rx_timeout_timer);
-        chip->rx_buff_curr_pos = 0;
-        mutex_unlock(&chip->rx_buff_mutex);
-        return size;
-    }
-
-    memcpy(chip->rx_buff + chip->rx_buff_curr_pos, buffer, size);
-    chip->rx_buff_curr_pos += size;
-    /* update the timeout timer */
-    mod_timer(&chip->rx_timeout_timer, jiffies + msecs_to_jiffies(ESPCHIP_SERIAL_RX_TIMEOUT_MS));
-    mutex_unlock(&chip->rx_buff_mutex);
-    return size;
-}
-
-static void espchip_data_received(struct device_data *dev_data)
-{
-    struct espchip_data *chip;
-    chip = dev_data->chip;
-
-    /* TODO: REMOVE DRBUG CALLBACK */
-    dev_info(&dev_data->serdev->dev, "in data received callback\n");
-    for (int i = 0; i <= chip->rx_buff_curr_pos; i++)
-    {
-        printk(KERN_CONT "%02X ", (uint32_t)chip->rx_buff[i]);
-    }
-    printk(KERN_CONT "\n");
-
-    complete_all(&chip->rx_buff_ready);
-}
-
-static void rx_timeout_callback(struct timer_list *tlist)
-{
-    struct device_data *dev_data;
-    struct espchip_data *chip;
-    chip = from_timer(chip, tlist, rx_timeout_timer);
-    dev_data = serdev_device_get_drvdata(chip->serdev);
-
-    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
-        return;
-    if (chip->rx_buff_curr_pos)
-        espchip_data_received(dev_data);
-    mutex_unlock(&chip->rx_buff_mutex);
-}
-
-static int espchip_reset(struct device_data *dev_data)
-{
-    int status;
-    struct espchip_data *chip = dev_data->chip;
-    status = mutex_lock_interruptible(&chip->io_mutex);
-    if (status)
-        return status;
-
-    status = serdev_device_write_buf(dev_data->serdev, ESPCHIP_AT_RESET, sizeof(ESPCHIP_AT_RESET));
-    if (status < 0)
-    {
-        mutex_unlock(&chip->io_mutex);
-        return status;
-    }
-    msleep(ESPCHIP_RESET_TIME_MS);
-
-    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
-    if (status)
-    {
-        mutex_unlock(&chip->io_mutex);
-        return status;
-    }
-    status = rx_buffer_has_okcrlf(chip);
-    if (status >= 0)
-        status = 0;
-
-    rx_buffer_clear(chip);
-    mutex_unlock(&chip->rx_buff_mutex);
-    mutex_unlock(&chip->io_mutex);
-    return status;
 }
 
 int espchip_scan_ap(struct device_data *dev_data, struct espchip_scan_ap_result *aps, size_t aps_size)
@@ -343,19 +263,194 @@ int espchip_disconnect_ap(struct device_data *dev_data)
 int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port)
 {
     int status;
-    char at_cmd[65];
-    size_t at_cmd_len;
-    u8 ok_sequence[] = {",CONNECT\r\n"};
+    char at_cmd[ESPCHIP_ALLOW_UDP_RX_TX_CMD_BUFFER_SIZE];
 
-    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_ALLOW_UDP_RX_TX, link_num, &remote_ip, htons(remote_port), htons(host_port));
+    size_t at_cmd_len;
+    u8 success_sequence[] = {",CONNECT"};
+
+    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_ALLOW_UDP_RX_TX, link_num, &remote_ip, htons(remote_port));
+    at_cmd_len--;
+
+    pr_info("link enable sequence:\n");
+    for (int i = 0; i <= at_cmd_len; i++)
+    {
+        printk(KERN_CONT "%02X ", (uint32_t)at_cmd[i]);
+    }
+    printk(KERN_CONT "\n");
+
     status = espchip_at_start_command(dev_data->chip, at_cmd, at_cmd_len);
     if (status)
+    {
+        espchip_at_end_command(dev_data->chip);
         return status;
+    }
 
-    status = rx_buffer_has_sequence(dev_data->chip, ok_sequence, sizeof(ok_sequence) - 1);
+    status = rx_buffer_has_sequence(dev_data->chip, success_sequence, sizeof(success_sequence) - 1);
     if (status >= 0)
         status = 0;
     espchip_at_end_command(dev_data->chip);
+    return status;
+}
+
+int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 data_len)
+{
+    int status, retries, result_seq_index;
+    char at_cmd[ESPCHIP_SEND_UDP_CMD_BUFFER_SIZE];
+    size_t at_cmd_len;
+    struct espchip_data *chip = dev_data->chip;
+    u8 data_accepted_seq[] = {"SEND OK\r\n"};
+
+    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_UDP_TX, link_num, data_len);
+    status = espchip_at_start_command(chip, at_cmd, at_cmd_len);
+    if (status)
+        return status;
+
+    /* wait until esp becomes ready to accept data */
+    /*
+    retries = ESPCHIP_UDP_SEND_MAX_RETRIES;
+    result_seq_index = rx_buffer_has_okcrlf(chip);
+    while (retries && (result_seq_index < 0))
+    {
+        retries--;
+        mutex_unlock(&chip->rx_buff_mutex);
+        msleep(ESPCHIP_UDP_SEND_RETRY_TIME_MS);
+        status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+        if (status)
+        {
+            mutex_unlock(&chip->io_mutex);
+            return status;
+        }
+        result_seq_index = rx_buffer_has_okcrlf(dev_data->chip);
+    }
+
+    if (result_seq_index < 0)
+    {
+        espchip_at_end_command(chip);
+        return -EIO;
+    }
+    */
+
+    /* send udp data */
+    mutex_unlock(&chip->rx_buff_mutex);
+
+    reinit_completion(&chip->rx_buff_ready);
+    status = serdev_device_write_buf(chip->serdev, data, data_len);
+    if (status < 0)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    status = wait_for_completion_interruptible(&chip->rx_buff_ready);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+
+    status = rx_buffer_has_sequence(chip, data_accepted_seq, sizeof(data_accepted_seq) - 1);
+    if (status >= 0)
+        status = 0;
+
+    espchip_at_end_command(dev_data->chip);
+    return status;
+}
+
+/* can sleep */
+static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size)
+{
+    struct device_data *dev_data;
+    struct espchip_data *chip;
+    dev_data = serdev_device_get_drvdata(serdev);
+    chip = dev_data->chip;
+
+    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
+        return 0;
+
+    /* more data that the driver can handle */
+    if ((size + chip->rx_buff_curr_pos) >= ESPCHIP_RX_BUFF_SIZE)
+    {
+        /* stop the timeout timer */
+        del_timer_sync(&chip->rx_timeout_timer);
+        chip->rx_buff_curr_pos = 0;
+        mutex_unlock(&chip->rx_buff_mutex);
+        return size;
+    }
+
+    memcpy(chip->rx_buff + chip->rx_buff_curr_pos, buffer, size);
+    chip->rx_buff_curr_pos += size;
+    /* update the timeout timer */
+    mod_timer(&chip->rx_timeout_timer, jiffies + msecs_to_jiffies(ESPCHIP_SERIAL_RX_TIMEOUT_MS));
+    mutex_unlock(&chip->rx_buff_mutex);
+    return size;
+}
+
+static void espchip_data_received(struct device_data *dev_data)
+{
+    struct espchip_data *chip;
+    chip = dev_data->chip;
+
+    /* TODO: REMOVE DRBUG CALLBACK */
+    dev_info(&dev_data->serdev->dev, "in data received callback\n");
+    for (int i = 0; i <= chip->rx_buff_curr_pos; i++)
+    {
+        printk(KERN_CONT "%02X ", (uint32_t)chip->rx_buff[i]);
+    }
+    printk(KERN_CONT "\n");
+
+    complete_all(&chip->rx_buff_ready);
+}
+
+static void rx_timeout_callback(struct timer_list *tlist)
+{
+    struct device_data *dev_data;
+    struct espchip_data *chip;
+    chip = from_timer(chip, tlist, rx_timeout_timer);
+    dev_data = serdev_device_get_drvdata(chip->serdev);
+
+    if (mutex_lock_interruptible(&chip->rx_buff_mutex))
+        return;
+    if (chip->rx_buff_curr_pos)
+        espchip_data_received(dev_data);
+    mutex_unlock(&chip->rx_buff_mutex);
+}
+
+static int espchip_reset(struct device_data *dev_data)
+{
+    int status;
+    struct espchip_data *chip = dev_data->chip;
+    status = mutex_lock_interruptible(&chip->io_mutex);
+    if (status)
+        return status;
+
+    status = serdev_device_write_buf(dev_data->serdev, ESPCHIP_AT_RESET, sizeof(ESPCHIP_AT_RESET));
+    if (status < 0)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    msleep(ESPCHIP_RESET_TIME_MS);
+
+    status = mutex_lock_interruptible(&chip->rx_buff_mutex);
+    if (status)
+    {
+        mutex_unlock(&chip->io_mutex);
+        return status;
+    }
+    status = rx_buffer_has_okcrlf(chip);
+    if (status >= 0)
+        status = 0;
+
+    rx_buffer_clear(chip);
+    mutex_unlock(&chip->rx_buff_mutex);
+    mutex_unlock(&chip->io_mutex);
     return status;
 }
 

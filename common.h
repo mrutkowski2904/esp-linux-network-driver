@@ -5,6 +5,7 @@
 #include <linux/inet.h>
 #include <linux/workqueue.h>
 #include <linux/serdev.h>
+#include <linux/semaphore.h>
 
 #define ESPNDEV_MAX_SSIDS 8
 #define ESPNDEV_MAX_SSID_SIZE 32

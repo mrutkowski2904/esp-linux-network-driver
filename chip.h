@@ -10,9 +10,6 @@
 
 #include "common.h"
 
-#define ESPCHIP_BAUDRATE 115200
-#define ESPCHIP_SERIAL_RX_TIMEOUT_MS 75
-#define ESPCHIP_RX_BUFF_SIZE 1600
 #define ESPCHIP_SSID_BUFFER_SIZE 32
 
 struct espchip_data
@@ -59,5 +56,6 @@ int espchip_disconnect_ap(struct device_data *dev_data);
 
 /* ip/ports in big endian order */
 int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port);
+int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 data_len);
 
 #endif /* ESPNET_CHIP_H */
