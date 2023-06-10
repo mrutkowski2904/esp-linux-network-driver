@@ -18,15 +18,6 @@
 #include "sta.h"
 #include "link.h"
 
-/* DUMMY UDP RX PACKET DATA */
-#define DIP "193.168.1.6"
-#define DPORT 55555
-
-#define SRC_MAC                            \
-    {                                      \
-        0xF0, 0xDE, 0xF1, 0x48, 0xAA, 0xC1 \
-    }
-
 /* wiphy callbacks */
 static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *scan_req);
 static int esp_wiphy_connect(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_connect_params *conn_params);
@@ -118,60 +109,6 @@ static struct ieee80211_supported_band espndev_band_2ghz = {
     .n_bitrates = ARRAY_SIZE(espndev_supported_rates_2ghz),
 };
 
-/* DEBUG WORK REMOVE */
-
-/* pkt_hex_dump function from:
- * https://olegkutkov.me/2019/10/17/printing-sk_buff-data/ */
-void pkt_hex_dump(struct sk_buff *skb)
-{
-    size_t len;
-    int rowsize = 16;
-    int i, l, linelen, remaining;
-    int li = 0;
-    uint8_t *data, ch;
-
-    printk("Packet hex dump:\n");
-    data = (uint8_t *)skb_mac_header(skb);
-
-    if (skb_is_nonlinear(skb))
-    {
-        len = skb->data_len;
-    }
-    else
-    {
-        len = skb->len;
-    }
-
-    remaining = len;
-    for (i = 0; i < len; i += rowsize)
-    {
-        printk("%06d\t", li);
-
-        linelen = min(remaining, rowsize);
-        remaining -= rowsize;
-
-        for (l = 0; l < linelen; l++)
-        {
-            ch = data[l];
-            printk(KERN_CONT "%02X ", (uint32_t)ch);
-        }
-
-        data += linelen;
-        li += 10;
-
-        printk(KERN_CONT "\n");
-    }
-}
-
-static void esp_wiphy_debug_work_cb(struct work_struct *work)
-{
-    struct device_data *dev_data;
-
-    dev_data = container_of(work, struct device_data, debug_work);
-    u8 my_msg[] = {"my message from kernel :)"};
-    // esp_rx_udp(dev_data, ntohl(in_aton("193.168.1.2")), 55555, my_msg, sizeof(my_msg));
-}
-
 static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *scan_req)
 {
     struct device_data *dev_data;
@@ -254,10 +191,8 @@ static void esp_wiphy_scan_work_cb(struct work_struct *work)
         return;
 
     if (time_is_after_jiffies(wdev_data->last_scan_jiffies + msecs_to_jiffies(ESPWIPHY_MIN_TIME_BETWEEN_SCANS_MS)))
-    {
-        dev_info(&dev_data->serdev->dev, "using cached scan results\n");
         cached = true;
-    }
+
     up(&dev_data->wiphy_sem);
 
     cached ? espsta_scan_cached(dev_data) : espsta_scan(dev_data);
@@ -323,49 +258,24 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
 {
     struct net_device_data *ndev_data;
     struct device_data *dev_data;
+    struct iphdr *ip_header = ip_hdr(skb);
+    struct udphdr *udp_header;
+    void *payload;
+    size_t payload_size;
+
     ndev_data = netdev_priv(dev);
     dev_data = ndev_data->dev_data;
 
-    pr_info("--------------\ntx cb\n");
-
-    struct iphdr *ip_header = ip_hdr(skb);
     if (ip_header && ip_header->version == 4)
     {
-        pr_info("IPv4 header present, saddr = %pI4\n", &ip_header->saddr);
-
         if (ip_header->protocol == IPPROTO_UDP)
         {
-            struct udphdr *udp_header = udp_hdr(skb);
-            pr_info("UDP header present\n");
-            pr_info("Dest port: %d\n", be16_to_cpu(udp_header->dest));
-            pr_info("Src port: %d\n", be16_to_cpu(udp_header->source));
-            pr_info("Len: %d\n", be16_to_cpu(udp_header->len));
-            pr_info("Check: %d\n", be16_to_cpu(udp_header->check));
-
-            u8 dummy_test[] = {"test data from rpi"};
-
+            udp_header = udp_hdr(skb);
+            payload = (void *)udp_header + sizeof(struct udphdr);
+            payload_size = be16_to_cpu(udp_header->len) - sizeof(struct udphdr);
             esplink_schedule_udp_send(dev_data, in_aton("192.168.1.104"),
-                                      udp_header->dest,
-                                      ip_header->saddr,
-                                      udp_header->source, dummy_test, sizeof(dummy_test));
-
-            /* TODO: DEBUG REMOVE */
-            /*
-            if (be16_to_cpu(udp_header->dest) == 55555)
-            {
-                pr_info("trigger port active, sending dummy response\n");
-                queue_work(dev_data->debug_workqueue, &dev_data->debug_work);
-            }
-            */
-        }
-        else if (ip_header->protocol == IPPROTO_TCP)
-        {
-            /* struct tcphdr *tcp_header = tcp_hdr(skb); */
-            pr_info("TCP header present\n");
-        }
-        else
-        {
-            pr_info("Header type: %d\n", ip_header->protocol);
+                                      udp_header->dest, ip_header->saddr, udp_header->source,
+                                      payload, payload_size);
         }
     }
 
@@ -382,7 +292,6 @@ static void esp_rx_udp(struct device_data *dev_data, u32 dst_ip, u16 dst_port, u
 
     u8 *pdata = NULL;
     u32 skb_len;
-    u8 src_mac[ETH_ALEN] = SRC_MAC;
 
     skb_len = data_size + sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct ethhdr);
     skb = dev_alloc_skb(skb_len);
@@ -429,11 +338,9 @@ static void esp_rx_udp(struct device_data *dev_data, u32 dst_ip, u16 dst_port, u
 
     eth_header = skb_push(skb, ETH_HLEN);
     memcpy(eth_header->h_dest, dev_data->esp_mac, ETH_ALEN);
-    memcpy(eth_header->h_source, src_mac, ETH_ALEN);
     eth_header->h_proto = htons(ETH_P_IP);
     skb->ip_summed = CHECKSUM_UNNECESSARY;
     skb->protocol = eth_type_trans(skb, dev_data->ndev);
-    pkt_hex_dump(skb);
     if (netif_rx(skb) == NET_RX_DROP)
         dev_err_ratelimited(&dev_data->serdev->dev, "rx skb dropped!\n");
 }
@@ -526,7 +433,7 @@ static int espndev_probe(struct serdev_device *serdev)
     status = esplink_init(dev_data);
     if (status)
         goto esplink_init_fail;
-    
+
     esplink_register_rx_cb(dev_data, esp_rx_udp);
 
     sema_init(&dev_data->wiphy_sem, 1);
@@ -552,15 +459,9 @@ static int espndev_probe(struct serdev_device *serdev)
         goto discwq_init_fail;
     }
 
-    /* TODO: REMOVE */
-    dev_data->debug_workqueue = create_singlethread_workqueue("esp_debug_wq");
-    if (dev_data->debug_workqueue == NULL)
-        return -ENOMEM;
-
     INIT_WORK(&dev_data->scan_work, esp_wiphy_scan_work_cb);
     INIT_WORK(&dev_data->connect_work, esp_wiphy_connect_work_cb);
     INIT_WORK(&dev_data->disconnect_work, esp_wiphy_disconnect_work_cb);
-    INIT_WORK(&dev_data->debug_work, esp_wiphy_debug_work_cb);
 
     status = espndev_wiphy_init(dev_data);
     if (status)
@@ -609,9 +510,6 @@ static void espndev_remove(struct serdev_device *serdev)
     esplink_deinit(dev_data);
     espsta_deinit(dev_data);
     espchip_deinit(dev_data);
-
-    /* TODO: REMOVE */
-    destroy_workqueue(dev_data->debug_workqueue);
 }
 
 static __init int espndrv_init(void)

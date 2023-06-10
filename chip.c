@@ -405,15 +405,6 @@ static void espchip_data_received(struct device_data *dev_data)
 {
     struct espchip_data *chip;
     chip = dev_data->chip;
-
-    /* TODO: REMOVE DRBUG CALLBACK */
-    dev_info(&dev_data->serdev->dev, "in data received callback\n");
-    for (int i = 0; i <= chip->rx_buff_curr_pos; i++)
-    {
-        printk(KERN_CONT "%02X ", (uint32_t)chip->rx_buff[i]);
-    }
-    printk(KERN_CONT "\n");
-
     rx_is_network(dev_data);
     complete_all(&chip->rx_buff_ready);
 }
@@ -469,7 +460,6 @@ static bool rx_is_network(struct device_data *dev_data)
             return true;
         }
 
-        pr_info("DEBUG: network rx detected, link num: %d, data length: %d\n", link_num, length);
         if (chip->on_net_rx != NULL)
             chip->on_net_rx(dev_data, link_num, chip->rx_buff + length_end_index + 1, length);
 

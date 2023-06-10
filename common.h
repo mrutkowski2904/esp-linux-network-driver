@@ -35,10 +35,6 @@ struct device_data
     struct espchip_data *chip;
     struct espsta_data *sta;
     struct esplink_data *link;
-
-    /* TODO: REMOVE */
-    struct workqueue_struct *debug_workqueue;
-    struct work_struct debug_work;
 };
 
 #endif /* ESPNET_COMMON_H */
