@@ -24,6 +24,8 @@ struct espchip_data
     struct timer_list rx_timeout_timer;
     struct mutex rx_buff_mutex;
     struct completion rx_buff_ready;
+
+    void (*on_net_rx)(struct device_data *dev_data, u8 link, void *data, size_t data_len);
 };
 
 enum espchip_ap_encryption_type
@@ -58,5 +60,7 @@ int espchip_disconnect_ap(struct device_data *dev_data);
 int espchip_create_udp_link(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port);
 int espchip_destroy_udp_link(struct device_data *dev_data, u8 link_num);
 int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 data_len);
+void espchip_register_net_rx_cb(struct device_data *dev_data,
+                                void (*on_net_rx)(struct device_data *dev_data, u8 link, void *data, size_t data_len));
 
 #endif /* ESPNET_CHIP_H */

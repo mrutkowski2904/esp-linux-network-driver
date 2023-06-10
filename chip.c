@@ -45,6 +45,9 @@ static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *
 static void espchip_data_received(struct device_data *dev_data);
 static void rx_timeout_callback(struct timer_list *tlist);
 
+/* checks if rx data is command response or incomming network data,  */
+static bool rx_is_network(struct device_data *dev_data);
+
 static int espchip_reset(struct device_data *dev_data);
 static int espchip_disable_at_echo(struct device_data *dev_data);
 static int espchip_enable_sta_mode(struct device_data *dev_data);
@@ -82,6 +85,7 @@ int espchip_init(struct device_data *dev_data)
 
     dev_data->chip->rx_buff_curr_pos = 0;
     dev_data->chip->serdev = dev_data->serdev;
+    dev_data->chip->on_net_rx = NULL;
 
     mutex_init(&dev_data->chip->io_mutex);
     mutex_init(&dev_data->chip->rx_buff_mutex);
@@ -362,6 +366,12 @@ int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 
     return status;
 }
 
+void espchip_register_net_rx_cb(struct device_data *dev_data,
+                                void (*on_net_rx)(struct device_data *dev_data, u8 link, void *data, size_t data_len))
+{
+    dev_data->chip->on_net_rx = on_net_rx;
+}
+
 /* can sleep */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size)
 {
@@ -404,6 +414,7 @@ static void espchip_data_received(struct device_data *dev_data)
     }
     printk(KERN_CONT "\n");
 
+    rx_is_network(dev_data);
     complete_all(&chip->rx_buff_ready);
 }
 
@@ -419,6 +430,55 @@ static void rx_timeout_callback(struct timer_list *tlist)
     if (chip->rx_buff_curr_pos)
         espchip_data_received(dev_data);
     mutex_unlock(&chip->rx_buff_mutex);
+}
+
+static bool rx_is_network(struct device_data *dev_data)
+{
+    struct espchip_data *chip;
+    u8 net_rx_start_seq[] = {"+IPD,"};
+    u8 length_end_seq[] = {":"};
+    int seq_index, length_end_index, length_str_size;
+    u8 link_num;
+    u16 length;
+    char length_str[30];
+    char link_num_str[2];
+    const u8 link_num_offset = 5;
+    const u8 length_offset = 7;
+    bool is_network_rx = false;
+
+    chip = dev_data->chip;
+    seq_index = rx_buffer_has_sequence_starting_from(chip, 0, net_rx_start_seq, sizeof(net_rx_start_seq) - 1);
+
+    if (seq_index >= 0)
+        is_network_rx = true;
+
+    while (seq_index >= 0)
+    {
+        memset(link_num_str, 0, sizeof(link_num_str));
+        memset(length_str, 0, sizeof(length_str));
+
+        link_num_str[0] = (char)*(chip->rx_buff + seq_index + link_num_offset);
+        length_end_index = rx_buffer_has_sequence_starting_from(chip, seq_index + length_offset, length_end_seq, sizeof(length_end_seq) - 1);
+
+        length_str_size = length_end_index - (seq_index + length_offset);
+        memcpy(length_str, chip->rx_buff + seq_index + length_offset, length_str_size);
+
+        if (kstrtou8(link_num_str, 10, &link_num) || kstrtou16(length_str, 10, &length))
+        {
+            dev_err(&dev_data->serdev->dev, "error while parsing network rx data");
+            return true;
+        }
+
+        pr_info("DEBUG: network rx detected, link num: %d, data length: %d\n", link_num, length);
+        if (chip->on_net_rx != NULL)
+            chip->on_net_rx(dev_data, link_num, chip->rx_buff + length_end_index + 1, length);
+
+        memset(chip->rx_buff + seq_index, 0, sizeof(net_rx_start_seq) - 1);
+        seq_index += sizeof(net_rx_start_seq) - 1;
+        seq_index = rx_buffer_has_sequence_starting_from(chip, seq_index, net_rx_start_seq, sizeof(net_rx_start_seq) - 1);
+    }
+
+    return is_network_rx;
 }
 
 static int espchip_reset(struct device_data *dev_data)

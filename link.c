@@ -11,6 +11,8 @@ static void esplink_send_udp_work_cb(struct work_struct *work);
 static int esplink_send_udp_data(struct device_data *dev_data,
                                  u32 remote_ip, u16 remote_port, u32 host_ip,
                                  u16 host_port, void *data, size_t data_len);
+static void esplink_on_net_rx(struct device_data *dev_data, u8 link_num, void *data, size_t data_len);
+static void esplink_receive_udp_work_cb(struct work_struct *work);
 
 /* little endian - should be converted to big endian
  * when comparing with ports given as arguments to functions in link.c/link.h */
@@ -31,13 +33,29 @@ int esplink_init(struct device_data *dev_data)
     if (link->tx_data.buff == NULL)
         return -ENOMEM;
 
-    link->udp_tx_workqueue = create_singlethread_workqueue("esp_link_wq");
+    link->rx_data.buff = devm_kzalloc(&dev_data->serdev->dev, ESPLINK_RX_BUFFER_SIZE, GFP_KERNEL);
+    if (link->rx_data.buff == NULL)
+        return -ENOMEM;
+
+    link->udp_tx_workqueue = create_singlethread_workqueue("esp_link_tx_wq");
     if (link->udp_tx_workqueue == NULL)
         return -ENOMEM;
 
+    link->udp_rx_workqueue = create_singlethread_workqueue("esp_link_rx_wq");
+    if (link->udp_rx_workqueue == NULL)
+    {
+        destroy_workqueue(link->udp_tx_workqueue);
+        return -ENOMEM;
+    }
+
+    INIT_WORK(&link->udp_rx_work, esplink_receive_udp_work_cb);
     INIT_WORK(&link->udp_tx_work, esplink_send_udp_work_cb);
     mutex_init(&link->link_mutex);
     sema_init(&link->tx_pending_sem, 1);
+    sema_init(&link->rx_pending_sem, 1);
+    link->on_rx = NULL;
+
+    espchip_register_net_rx_cb(dev_data, esplink_on_net_rx);
 
     return 0;
 }
@@ -48,6 +66,9 @@ void esplink_deinit(struct device_data *dev_data)
 
     cancel_work_sync(&link->udp_tx_work);
     destroy_workqueue(link->udp_tx_workqueue);
+
+    cancel_work_sync(&link->udp_rx_work);
+    destroy_workqueue(link->udp_rx_workqueue);
 }
 
 int esplink_schedule_udp_send(struct device_data *dev_data,
@@ -89,6 +110,11 @@ int esplink_schedule_udp_send(struct device_data *dev_data,
     up(&link->tx_pending_sem);
 
     return queue_work(link->udp_tx_workqueue, &link->udp_tx_work);
+}
+
+void esplink_register_rx_cb(struct device_data *dev_data, esplink_rx_cb rx)
+{
+    dev_data->link->on_rx = rx;
 }
 
 static void esplink_send_udp_work_cb(struct work_struct *work)
@@ -136,7 +162,7 @@ static int esplink_send_udp_data(struct device_data *dev_data,
     {
         slot = &link->slots[i];
 
-        if (slot->active && (slot->remote_ip == remote_ip) && (slot->remote_port == remote_port))
+        if (slot->active && (slot->remote_ip == remote_ip) && (slot->remote_port == remote_port) && (slot->host_port == host_port))
         {
             status = espchip_send_udp(dev_data, i, data, data_len);
             slot->last_transfer_jiffies = jiffies;
@@ -196,4 +222,50 @@ static int esplink_send_udp_data(struct device_data *dev_data,
     status = espchip_send_udp(dev_data, slot_with_oldest_transfer_index, data, data_len);
     mutex_unlock(&link->link_mutex);
     return status;
+}
+
+static void esplink_on_net_rx(struct device_data *dev_data, u8 link_num, void *data, size_t data_len)
+{
+    struct esplink_data *link = dev_data->link;
+    if (data_len > ESPLINK_RX_BUFFER_SIZE)
+        return;
+
+    if (down_interruptible(&link->rx_pending_sem))
+        return;
+
+    if (link->rx_pending)
+    {
+        up(&link->rx_pending_sem);
+        return;
+    }
+    link->rx_pending = true;
+
+    link->rx_data.link_num = link_num;
+    link->rx_data.buff_size = data_len;
+    memcpy(link->rx_data.buff, data, data_len);
+    up(&link->rx_pending_sem);
+    queue_work(link->udp_rx_workqueue, &link->udp_rx_work);
+}
+
+static void esplink_receive_udp_work_cb(struct work_struct *work)
+{
+    struct esplink_data *link;
+    struct esplink_slot *slot;
+
+    link = container_of(work, struct esplink_data, udp_rx_work);
+    slot = &link->slots[link->rx_data.link_num];
+
+    if (link->on_rx != NULL)
+        link->on_rx(link->dev_data,
+                    link->host_ip,
+                    slot->host_port,
+                    slot->remote_ip,
+                    slot->remote_port,
+                    link->rx_data.buff,
+                    (u16) link->rx_data.buff_size);
+
+    if (down_interruptible(&link->rx_pending_sem))
+        return;
+    link->rx_pending = false;
+    up(&link->rx_pending_sem);
 }

@@ -41,7 +41,9 @@ static void esp_wiphy_disconnect_work_cb(struct work_struct *work);
 static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *dev);
 
 /* helper functions */
-static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *data, u16 data_size);
+static void esp_rx_udp(struct device_data *dev_data,
+                       u32 dst_ip, u16 dst_port, u32 src_ip,
+                       u16 src_port, void *data, u16 data_size);
 static int espndev_wiphy_init(struct device_data *dev_data);
 static void espndev_wiphy_deinit(struct device_data *dev_data);
 static int espndev_netdev_init(struct device_data *dev_data);
@@ -167,7 +169,7 @@ static void esp_wiphy_debug_work_cb(struct work_struct *work)
 
     dev_data = container_of(work, struct device_data, debug_work);
     u8 my_msg[] = {"my message from kernel :)"};
-    esp_rx_udp(dev_data, ntohl(in_aton("193.168.1.2")), 55555, my_msg, sizeof(my_msg));
+    // esp_rx_udp(dev_data, ntohl(in_aton("193.168.1.2")), 55555, my_msg, sizeof(my_msg));
 }
 
 static int esp_wiphy_scan(struct wiphy *wiphy, struct cfg80211_scan_request *scan_req)
@@ -371,15 +373,12 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
     return NETDEV_TX_OK;
 }
 
-static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *data, u16 data_size)
+static void esp_rx_udp(struct device_data *dev_data, u32 dst_ip, u16 dst_port, u32 src_ip, u16 src_port, void *data, u16 data_size)
 {
     struct sk_buff *skb = NULL;
     struct ethhdr *eth_header = NULL;
     struct iphdr *ip_header = NULL;
     struct udphdr *udp_header = NULL;
-
-    __be32 dip = in_aton(DIP);
-    __be32 sip = htonl(ip);
 
     u8 *pdata = NULL;
     u32 skb_len;
@@ -403,8 +402,8 @@ static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *dat
     skb_put(skb, sizeof(struct udphdr));
 
     udp_header = udp_hdr(skb);
-    udp_header->source = htons(port);
-    udp_header->dest = htons(DPORT);
+    udp_header->source = src_port;
+    udp_header->dest = dst_port;
     udp_header->len = htons(sizeof(struct udphdr) + data_size);
     udp_header->check = 0;
 
@@ -414,15 +413,15 @@ static void esp_rx_udp(struct device_data *dev_data, u32 ip, u16 port, void *dat
     ip_header->frag_off = 0;
     ip_header->protocol = IPPROTO_UDP;
     ip_header->tos = 0;
-    ip_header->daddr = dip;
-    ip_header->saddr = sip;
+    ip_header->daddr = dst_ip;
+    ip_header->saddr = src_ip;
     ip_header->ttl = 0x40;
     ip_header->tot_len = htons(sizeof(struct udphdr) + sizeof(struct iphdr) + data_size);
     ip_header->check = 0;
 
     skb->csum = skb_checksum(skb, ip_header->ihl * 4, skb->len - ip_header->ihl * 4, 0);
     ip_header->check = ip_fast_csum(ip_header, ip_header->ihl);
-    udp_header->check = csum_tcpudp_magic(sip, dip, skb->len - ip_header->ihl * 4, IPPROTO_UDP, skb->csum);
+    udp_header->check = csum_tcpudp_magic(src_ip, dst_ip, skb->len - ip_header->ihl * 4, IPPROTO_UDP, skb->csum);
 
     pdata = skb_put(skb, data_size);
     if (pdata)
@@ -527,6 +526,8 @@ static int espndev_probe(struct serdev_device *serdev)
     status = esplink_init(dev_data);
     if (status)
         goto esplink_init_fail;
+    
+    esplink_register_rx_cb(dev_data, esp_rx_udp);
 
     sema_init(&dev_data->wiphy_sem, 1);
 
