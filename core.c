@@ -273,7 +273,7 @@ static netdev_tx_t esp_ndo_start_xmit(struct sk_buff *skb, struct net_device *de
             udp_header = udp_hdr(skb);
             payload = (void *)udp_header + sizeof(struct udphdr);
             payload_size = be16_to_cpu(udp_header->len) - sizeof(struct udphdr);
-            esplink_schedule_udp_send(dev_data, in_aton("192.168.1.104"),
+            esplink_schedule_udp_send(dev_data, ip_header->daddr,
                                       udp_header->dest, ip_header->saddr, udp_header->source,
                                       payload, payload_size);
         }
