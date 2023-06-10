@@ -134,7 +134,8 @@ int espsta_connect_ap(struct device_data *dev_data, struct espsta_connect_ap_par
 
 int espsta_disconnect_ap(struct device_data *dev_data)
 {
-    return espchip_disconnect_ap(dev_data);
+    /* return espchip_disconnect_ap(dev_data); */
+    return 0;
 }
 
 static int espsta_ap_inform(struct device_data *dev_data)

@@ -23,8 +23,8 @@
 #define ESPCHIP_AT_DISCONNECT_AP "AT+CWQAP\r\n"
 #define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
 #define ESPCHIP_AT_MULTIPLE_CONNECTIONS "AT+CIPMUX=1\r\n"
-/* #define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d\r\n" */
-#define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d\r\n"
+#define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d,0\r\n"
+// #define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d\r\n"
 #define ESPCHIP_AT_UDP_TX "AT+CIPSEND=%d,%d\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
@@ -268,15 +268,7 @@ int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remot
     size_t at_cmd_len;
     u8 success_sequence[] = {",CONNECT"};
 
-    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_ALLOW_UDP_RX_TX, link_num, &remote_ip, htons(remote_port));
-    at_cmd_len--;
-
-    pr_info("link enable sequence:\n");
-    for (int i = 0; i <= at_cmd_len; i++)
-    {
-        printk(KERN_CONT "%02X ", (uint32_t)at_cmd[i]);
-    }
-    printk(KERN_CONT "\n");
+    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_ALLOW_UDP_RX_TX, link_num, &remote_ip, htons(remote_port), htons(host_port));
 
     status = espchip_at_start_command(dev_data->chip, at_cmd, at_cmd_len);
     if (status)
@@ -306,7 +298,6 @@ int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 
         return status;
 
     /* wait until esp becomes ready to accept data */
-    /*
     retries = ESPCHIP_UDP_SEND_MAX_RETRIES;
     result_seq_index = rx_buffer_has_okcrlf(chip);
     while (retries && (result_seq_index < 0))
@@ -328,7 +319,6 @@ int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 
         espchip_at_end_command(chip);
         return -EIO;
     }
-    */
 
     /* send udp data */
     mutex_unlock(&chip->rx_buff_mutex);

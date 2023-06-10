@@ -12,6 +12,12 @@ static int esplink_send_udp_data(struct device_data *dev_data,
                                  u32 remote_ip, u16 remote_port, u32 host_ip,
                                  u16 host_port, void *data, size_t data_len);
 
+/* little endian - should be converted to big endian
+ * when comparing with ports given as arguments to functions in link.c/link.h */
+static const u16 esplink_not_supported_ports[] = {
+    5353,
+};
+
 int esplink_init(struct device_data *dev_data)
 {
     struct esplink_data *link;
@@ -52,6 +58,17 @@ int esplink_schedule_udp_send(struct device_data *dev_data,
 
     if (data_len > ESPLINK_TX_BUFFER_SIZE)
         return -EINVAL;
+
+    /* discard datagram if it's using not supported port */
+    for (int i = 0; i < ARRAY_SIZE(esplink_not_supported_ports); i++)
+    {
+        u16 port_be = htons(esplink_not_supported_ports[i]);
+        if ((port_be == remote_port) || (port_be == host_port))
+        {
+            dev_info_ratelimited(&dev_data->serdev->dev, "trying to use not supported port, discarding datagram\n");
+            return 0;
+        }
+    }
 
     if (down_interruptible(&link->tx_pending_sem))
         return -ERESTARTSYS;
@@ -111,10 +128,11 @@ static int esplink_send_udp_data(struct device_data *dev_data,
 
     /* TODO: save source ip - for rx data in the future */
 
+    dev_info(&dev_data->serdev->dev, "trying to enable UDP link...\n");
     status = espchip_allow_udp_rx_tx(dev_data, 0, remote_ip, remote_port, host_port);
     if (status)
     {
-        dev_err(&dev_data->serdev->dev, "error while enabling udp rx tx link\n");
+        dev_err(&dev_data->serdev->dev, "error while enabling UDP Rx Tx link\n");
         mutex_unlock(&link->link_mutex);
         return status;
     }
@@ -123,7 +141,7 @@ static int esplink_send_udp_data(struct device_data *dev_data,
     status = espchip_send_udp(dev_data, 0, data, data_len);
     if (status)
     {
-        dev_err(&dev_data->serdev->dev, "error while sending udp data\n");
+        dev_err(&dev_data->serdev->dev, "error while sending UDP data\n");
         mutex_unlock(&link->link_mutex);
         return status;
     }
