@@ -24,7 +24,7 @@
 #define ESPCHIP_AT_DISABLE_CONNECT_ON_START "AT+CWAUTOCONN=0\r\n"
 #define ESPCHIP_AT_MULTIPLE_CONNECTIONS "AT+CIPMUX=1\r\n"
 #define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d,%d,0\r\n"
-// #define ESPCHIP_AT_ALLOW_UDP_RX_TX "AT+CIPSTART=%d,\"UDP\",\"%pI4\",%d\r\n"
+#define ESPCHIP_AT_DISALLOW_UDP_RX_TX "AT+CIPCLOSE=%d\r\n"
 #define ESPCHIP_AT_UDP_TX "AT+CIPSEND=%d,%d\r\n"
 
 #define ESPCHIP_RESET_TIME_MS 750
@@ -36,7 +36,8 @@
 #define ESPCHIP_RX_BUFF_SIZE 1600
 #define ESPCHIP_SEND_UDP_CMD_BUFFER_SIZE 30
 #define ESPCHIP_CONNECT_AP_BUFFER_SIZE (ESPNDEV_MAX_SSID_SIZE + ESPNDEV_MAX_PASSWORD_SIZE + 20)
-#define ESPCHIP_ALLOW_UDP_RX_TX_CMD_BUFFER_SIZE 65
+#define ESPCHIP_CREATE_UDP_LINK_CMD_BUFFER_SIZE 65
+#define ESPCHIP_DESTROY_UDP_LINK_CMD_BUFFER_SIZE 25
 
 /* executed on serial rx */
 static int espchip_serial_rx(struct serdev_device *serdev, const unsigned char *buffer, size_t size);
@@ -260,11 +261,10 @@ int espchip_disconnect_ap(struct device_data *dev_data)
     return status;
 }
 
-int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port)
+int espchip_create_udp_link(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port)
 {
     int status;
-    char at_cmd[ESPCHIP_ALLOW_UDP_RX_TX_CMD_BUFFER_SIZE];
-
+    char at_cmd[ESPCHIP_CREATE_UDP_LINK_CMD_BUFFER_SIZE];
     size_t at_cmd_len;
     u8 success_sequence[] = {",CONNECT"};
 
@@ -282,6 +282,15 @@ int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remot
         status = 0;
     espchip_at_end_command(dev_data->chip);
     return status;
+}
+
+int espchip_destroy_udp_link(struct device_data *dev_data, u8 link_num)
+{
+    char at_cmd[ESPCHIP_DESTROY_UDP_LINK_CMD_BUFFER_SIZE];
+    size_t at_cmd_len;
+
+    at_cmd_len = sprintf(at_cmd, ESPCHIP_AT_DISALLOW_UDP_RX_TX, link_num);
+    return espchip_at_execute_command_wait_okcrlf(dev_data->chip, at_cmd, at_cmd_len);
 }
 
 int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 data_len)

@@ -106,7 +106,7 @@ static void esplink_send_udp_work_cb(struct work_struct *work)
                                    link->tx_data.buff,
                                    link->tx_data.buff_size);
     if (status)
-        dev_err(&link->dev_data->serdev->dev, "error occured while sending UDP data\n");
+        dev_err(&link->dev_data->serdev->dev, "error occured while sending datagram\n");
 
     if (down_interruptible(&link->tx_pending_sem))
         return;
@@ -118,51 +118,82 @@ static int esplink_send_udp_data(struct device_data *dev_data,
                                  u32 remote_ip, u16 remote_port, u32 host_ip,
                                  u16 host_port, void *data, size_t data_len)
 {
-    int status;
+    int status, free_slot_index, slot_with_oldest_transfer_index;
     struct esplink_data *link;
+    struct esplink_slot *slot;
 
     link = dev_data->link;
     status = mutex_lock_interruptible(&link->link_mutex);
     if (status)
         return status;
 
-    /* TODO: save source ip - for rx data in the future */
+    link->host_ip = host_ip;
+    slot_with_oldest_transfer_index = 0;
+    free_slot_index = -1;
 
-    dev_info(&dev_data->serdev->dev, "trying to enable UDP link...\n");
-    status = espchip_allow_udp_rx_tx(dev_data, 0, remote_ip, remote_port, host_port);
-    if (status)
+    /* case 1: link exists, can be reused */
+    for (int i = 0; i < ARRAY_SIZE(link->slots); i++)
     {
-        dev_err(&dev_data->serdev->dev, "error while enabling UDP Rx Tx link\n");
+        slot = &link->slots[i];
+
+        if (slot->active && (slot->remote_ip == remote_ip) && (slot->remote_port == remote_port))
+        {
+            status = espchip_send_udp(dev_data, i, data, data_len);
+            slot->last_transfer_jiffies = jiffies;
+            mutex_unlock(&link->link_mutex);
+            return status;
+        }
+
+        if (!slot->active)
+            free_slot_index = i;
+
+        if (link->slots[i].last_transfer_jiffies < link->slots[slot_with_oldest_transfer_index].last_transfer_jiffies)
+            slot_with_oldest_transfer_index = i;
+    }
+
+    /* case 2: link does not exist and there is free link slot */
+    if (free_slot_index >= 0)
+    {
+        status = espchip_create_udp_link(dev_data, free_slot_index, remote_ip, remote_port, host_port);
+        if (status)
+        {
+            dev_err_ratelimited(&dev_data->serdev->dev, "error while enabling UDP Rx Tx link\n");
+            mutex_unlock(&link->link_mutex);
+            return status;
+        }
+        link->slots[free_slot_index].last_transfer_jiffies = jiffies;
+        link->slots[free_slot_index].active = true;
+        link->slots[free_slot_index].host_port = host_port;
+        link->slots[free_slot_index].remote_port = remote_port;
+        link->slots[free_slot_index].remote_ip = remote_ip;
+        status = espchip_send_udp(dev_data, free_slot_index, data, data_len);
         mutex_unlock(&link->link_mutex);
         return status;
     }
 
-    dev_info(&dev_data->serdev->dev, "trying to send UDP data...\n");
-    status = espchip_send_udp(dev_data, 0, data, data_len);
+    /* case 3: no slot with given parameters and no free slot available */
+    status = espchip_destroy_udp_link(dev_data, slot_with_oldest_transfer_index);
     if (status)
     {
-        dev_err(&dev_data->serdev->dev, "error while sending UDP data\n");
+        dev_err_ratelimited(&dev_data->serdev->dev, "error while freeing UDP Rx Tx link\n");
         mutex_unlock(&link->link_mutex);
         return status;
     }
 
-    /* TODO: find link with given remote_ip and remote_port */
-    /* TODO: send data to that link */
-    /* TODO: set current jiffies as last transfer */
-    /* TODO: return */
+    status = espchip_create_udp_link(dev_data, slot_with_oldest_transfer_index, remote_ip, remote_port, host_port);
+    if (status)
+    {
+        dev_err_ratelimited(&dev_data->serdev->dev, "error while creating new UDP Rx Tx link\n");
+        mutex_unlock(&link->link_mutex);
+        return status;
+    }
 
-    /* TODO: if link does not exist and at least one slot is free - create one for given remote_ip and remote_port */
-    /* TODO: send data to that link */
-    /* TODO: set current jiffies as last transfer */
-    /* TODO: return */
-
-    /* TODO: find link that has not transmitted/received data for the longest time */
-    /* TODO: remove that link */
-    /* TODO: create new link with given remote_ip and remote_port */
-    /* TODO: send data to that link */
-    /* TODO: set current jiffies as last transfer */
-    /* TODO: return */
-
+    link->slots[slot_with_oldest_transfer_index].last_transfer_jiffies = jiffies;
+    link->slots[slot_with_oldest_transfer_index].active = true;
+    link->slots[slot_with_oldest_transfer_index].host_port = host_port;
+    link->slots[slot_with_oldest_transfer_index].remote_port = remote_port;
+    link->slots[slot_with_oldest_transfer_index].remote_ip = remote_ip;
+    status = espchip_send_udp(dev_data, slot_with_oldest_transfer_index, data, data_len);
     mutex_unlock(&link->link_mutex);
-    return 0;
+    return status;
 }

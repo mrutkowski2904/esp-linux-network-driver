@@ -55,7 +55,8 @@ int espchip_connect_ap(struct device_data *dev_data, char *ssid_str, char *passw
 int espchip_disconnect_ap(struct device_data *dev_data);
 
 /* ip/ports in big endian order */
-int espchip_allow_udp_rx_tx(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port);
+int espchip_create_udp_link(struct device_data *dev_data, u8 link_num, u32 remote_ip, u16 remote_port, u16 host_port);
+int espchip_destroy_udp_link(struct device_data *dev_data, u8 link_num);
 int espchip_send_udp(struct device_data *dev_data, u8 link_num, void *data, u16 data_len);
 
 #endif /* ESPNET_CHIP_H */
