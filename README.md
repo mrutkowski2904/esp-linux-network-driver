@@ -1,5 +1,5 @@
 # Linux Network Driver for ESP32 C3
-This repository contains Linux kernel driver that uses ESP32 C3 as a wireless network adapter.
+This repository contains Linux kernel driver that uses ESP32 C3 as a wireless network adapter. <br>
 Overview:
 * Based on the `cfg80211` subsystem
 * Device Tree support
